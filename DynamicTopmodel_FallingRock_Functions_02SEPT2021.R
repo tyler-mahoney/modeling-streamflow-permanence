@@ -28,8 +28,8 @@ Headwater.evaluation.dynamic <- function(qin.file, FR.Spatial, TS.logger.clean.a
   Q <- data.frame(explicit.routing.run$routed.flow.instant.mm_s)                   # Assign the routed flow instant (mm/s) to a variables
   r.names <- names(Q)                                                              # Get the reach names
   
-  # Convert Q from mm_s to mm/day
-  Q <- Q*60*60*24                                                                  # This is important for some of the empirical calculations we'll later need to do
+  # Convert Q to mm/day
+  Q <- Q*24000                                                                  # This is important for some of the empirical calculations we'll later need to do
   
   # Calculate the fdc of each reach 
   Flow.duration.reaches <- matrix(0,nrow = length(Q[,1]),ncol = length(r.names))   # initialize the flow duration matrix
