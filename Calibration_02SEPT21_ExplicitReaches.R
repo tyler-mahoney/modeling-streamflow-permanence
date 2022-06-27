@@ -2,7 +2,7 @@
 # Uses PSO calibration method to optimize the time series
 
 # Read in the functions from this script ---- MAKE SURE TO UPDATE THIS AS NEEDED
-source('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/FallingRock_Code/DynamicTopmodel_FallingRock_Functions_02SEPT2021.R')
+source('DynamicTopmodel_FallingRock_Functions_02SEPT2021.R')
 
 # Read in Libraries
 library(dynatopmodel)                                           # Read in the dynatopmodel package
@@ -120,12 +120,9 @@ params <- lower+(upper-lower)/2                                 # Unused - but f
 
 params.best.FC4 <- c(0.978,-6.75, 0.679,0.981,500,5.76,.606,1.58,0.0376,.181,.136,.0693,-9.91,-3.22,-2.81)
 
-# Set the Working Directory (to run the calibration) - MAKE SURE TO RENAME THE FOLDER TO THE APPROPRIATE CALIBRATION TEST AS OF 7/29/2021 IT IS CalibrationTest13
-model.drty <- paste('C:/Users/david/OneDrive/Desktop/',                            # This is the directory for the calibration
-                    'EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/',             # The model will save PSO files 
-                    '4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/',                     # To this location
-                    '1 FR Test/Calibration/CalibrationTest13',sep='')              # Specify the directory 
-setwd(model.drty)                                                                  # Set the working directory again
+# Set the Working Directory (to run the calibration) - MAKE SURE TO RENAME THE FOLDER TO THE APPROPRIATE CALIBRATION TEST AS OF 6/27/2022 IT IS CalibrationOutput - a folder stored in GitHub
+model.drty <- paste0(getwd(),'/CalibrationOutput',sep='')
+#setwd(model.drty)                                                                  # Set the working directory again 
 
 # Run a test of the model to make sure that things look good before running the PSO calibration 
 result.test <- runPSOCalibrationTopmodel(param.values=params,                      # TEST - Run the model with the optimal parameter set
@@ -395,7 +392,7 @@ time.qbf <- time(result.optim.run$run$fluxes$qbf)                               
 
 ## Read in the 1/0 timeseries
 # Read data from the loggers stored in the following directory
-logger.dir <- 'C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/3 DATA/2-PROJECT1-ROBINSON-FOREST/4-LOGGERDATA'
+logger.dir <- paste0(getwd(),'/LoggerData',sep='')
 files.logger <- list.files(logger.dir,pattern='*clean.csv')                        # List files in the above directory
 files.logger <- files.logger[1:4]                                                  # Right now only care about the FC sensors (1-4) in the directory
 Reach.identifiers <- c('X3722','X3242','X2538','X810') # is FC3 2538?? 
@@ -436,8 +433,8 @@ names(TS.zoo.all) <- files.logger
 names(TS.logger.clean.all) <- files.logger 
 
 # Read in the files for behavorial simulations
-# Set the directory NOTE: USER MUST CHANGE THE FOLDER FOR WHATEVER CALIBRATION TEST WE ARE ON, AS OF 7/29/2021 THIS IS CalibrationTest13
-qin.files.dir <- 'C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores'
+# Set the directory NOTE: USER MUST CHANGE THE FOLDER FOR WHATEVER CALIBRATION TEST WE ARE ON, AS OF 6/27/2022 THIS IS CalibrationOutput from Github
+qin.files.dir <- paste0(model.drty,'/fluxes_stores',sep='') #' C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores'
 qin.files <- list.files(qin.files.dir,pattern="fluxqin")        # Read in all the files with the 'fluxqin' name
 
 headwater.postprocess <- c()                                    # Initialize the postprocessing vector 
@@ -564,7 +561,7 @@ upper.plot <- ifelse(FC4.plot<upper.plot,upper.plot,FC4.plot)+.2
 obs.minus.sim.plot <- obs.plot-sim.plot
 outlet.sim.obs <- data.frame(time=as.Date(time(Qsim.best.zoo)),sim=sim.plot,obs=obs.plot,
                              lower=lower.plot,upper=upper.plot,FC4.plot=FC4.plot,obs.minus.sim=obs.minus.sim.plot) # This code converts everything from m/hr to mm/day
-write.csv(outlet.sim.obs,'C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/6 WRITE UP/SciHub/dischargeTimeSeries.csv')
+#write.csv(outlet.sim.obs,'C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/6 WRITE UP/SciHub/dischargeTimeSeries.csv')
 #upper.lower.band <- data.frame(lower=q025,upper=q975)
 #require(scales)
 sim.obs.outlet.plot <- ggplot(data=outlet.sim.obs,aes(x=time,y=sim))+geom_ribbon(data=outlet.sim.obs,aes(ymin=lower,ymax=upper),fill='grey70')+geom_line(data=outlet.sim.obs,aes(x=time,y=obs),color='red',linetype='solid') +
@@ -765,20 +762,20 @@ hist.flow.thresh <- hist(kge.FC1percentcorrect.flowthresh$flow.thresh, breaks=13
 
 # plot the FDC
 
-setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores')
-qin.run <- read.csv(paste0('fluxqin',qin.file,'.csv'))                           # Read qin 
+#setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores')
+qin.run <- read.csv(paste0(model.drty,'fluxes_stores', 'fluxqin',qin.file,'.csv'))                           # Read qin 
 qin.run <- xts(qin.run[,-1],time.qbf)                                            # Convert to xts
-qbf.run <- read.csv(paste0('fluxqbf',qin.file,'.csv'))                           # Read qbf
+qbf.run <- read.csv(paste0(model.drty,'fluxes_stores', 'fluxqbf',qin.file,'.csv'))                           # Read qbf
 qbf.run <- xts(qbf.run[,-1],time.qbf)                                            # Convert to xts
-ae.run <- read.csv(paste0('fluxae',qin.file,'.csv'))                             # Read ae
+ae.run <- read.csv(paste0(model.drty,'fluxes_stores','fluxae',qin.file,'.csv'))                             # Read ae
 ae.run <- xts(ae.run[,-1],time.qbf)                                              # Convert to xts
-rain.run <- read.csv(paste0('fluxrain',qin.file,'.csv'))                         # Read rain
+rain.run <- read.csv(paste0(model.drty,'fluxes_stores','fluxrain',qin.file,'.csv'))                         # Read rain
 rain.run <- xts(rain.run[,-1],time.qbf)                                          # Convert to xts
-qof.run <- read.csv(paste0('fluxqof',qin.file,'.csv'))                           # Read qof
+qof.run <- read.csv(paste0(model.drty,'fluxes_stores','fluxqof',qin.file,'.csv'))                           # Read qof
 qof.run <- xts(qof.run[,-1],time.qbf)                                            # Convert to xts
-Qsim.run <- read.csv(paste0('qsim',qin.file,'.csv'))                             # Read Qsim
+Qsim.run <- read.csv(paste0(model.drty,'fluxes_stores','qsim',qin.file,'.csv'))                             # Read Qsim
 Qsim.run <- xts(Qsim.run[,-1],time.qbf)                                          # Convert to xts
-q_specific.run <- read.csv(paste0('qsim_specific',qin.file,'.csv'))
+q_specific.run <- read.csv(paste0(model.drty,'fluxes_stores','qsim_specific',qin.file,'.csv'))
 q_specific.run <- data.frame(Q=q_specific.run[,-1]*24000,time=time.qbf)
 compile.fluxes <- list(qin = qin.run, qbf = qbf.run, ae = ae.run,                # Compile fluxes 
                        rain = rain.run, qof = qof.run)                           # Into list
@@ -841,24 +838,24 @@ plot(x=Flow.duration.reaches$X3802,y=Q.in.rank$X3802,ylab=expression(paste('Disc
 axis(2,at=c(0.005,0.01,0.1,1,25,200,1000), labels=c(0.005,0.01,0.1,1,25,200,1000))
 View(flow.duration.outlet)
 
-write.csv(flow.duration.outlet,'C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/6 WRITE UP/SciHub/outFlowDuration.csv')
+#write.csv(flow.duration.outlet,'C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/6 WRITE UP/SciHub/outFlowDuration.csv')
 
 # Read in stream network
-FR_drn <- shapefile('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/1 GIS ANALYSIS/Shapes/FR4000StreamNet.shp')
-FR_boundary <- shapefile('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/1 GIS ANALYSIS/Shapes/FRSubcatchments.shp')
-FR_DEM <- raster('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/1 GIS ANALYSIS/Rasters/fr1meterDEM.tif')
+FR_drn <- shapefile('SpatialInputData/FR4000StreamNet.shp')
+FR_boundary <- shapefile('SpatialInputData/FRSubcatchments.shp')
+FR_DEM <- raster('SpatialInputData/fr1meterDEM.tif')
 
 # Add the average percent connected for the reaches 
 FR_drn$percent.connected <- network.percent.on.stats$mean
 test.df.percent.on <- data.frame(reach.no=FR_drn$LINKNO,percent.on=network.percent.on.stats$mean)
-setwd(paste0(getwd(),'/Shapefiles'))
-shapefile(FR_drn,'FR_drn_mean.shp')
+#setwd(paste0(getwd(),'/Shapefiles'))
+#shapefile(FR_drn,'FR_drn_mean.shp')
 
 
-x11()
-plot(FR_DEM)
-lines(FR_boundary)
-lines(FR_drn)
+#x11()
+#plot(FR_DEM)
+#lines(FR_boundary)
+#lines(FR_drn)
 
 # Plot the 95PPU
 x11()                                                           # Open a new window
@@ -937,18 +934,19 @@ plot(hist(percent.thresh.postproccessing$percent.threshold),                    
 Headwater.evaluation.dynamic <- function(qin.file, FR.Spatial, TS.logger.clean.all, TS.zoo.all, logger.out.percent, Reach.identifiers, Reach.identifiers.second,model.timestep, result.optim.run, time.qbf, ...) {
   # Read in explicit HRU results for fluxes and storages from the behavioral sets
   # NOTE WE MUST SET THE DIRECTORY TO THE PROPER CALIBRATION TEST FOLDER, AS OF 7/6/2021 IT IS CalibrationTest13
-  setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores')
-  qin.run <- read.csv(paste0('fluxqin',qin.file,'.csv'))                           # Read qin 
+  fluxes.stores.dir <- paste0(getwd(),'/CalibrationOutput/fluxes_stores/')
+  #setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores')
+  qin.run <- read.csv(paste0(fluxes.stores.dir,'fluxqin',qin.file,'.csv'))                           # Read qin 
   qin.run <- xts(qin.run[,-1],time.qbf)                                            # Convert to xts
-  qbf.run <- read.csv(paste0('fluxqbf',qin.file,'.csv'))                           # Read qbf
+  qbf.run <- read.csv(paste0(fluxes.stores.dir,'fluxqbf',qin.file,'.csv'))                           # Read qbf
   qbf.run <- xts(qbf.run[,-1],time.qbf)                                            # Convert to xts
-  ae.run <- read.csv(paste0('fluxae',qin.file,'.csv'))                             # Read ae
+  ae.run <- read.csv(paste0(fluxes.stores.dir,'fluxae',qin.file,'.csv'))                             # Read ae
   ae.run <- xts(ae.run[,-1],time.qbf)                                              # Convert to xts
-  rain.run <- read.csv(paste0('fluxrain',qin.file,'.csv'))                         # Read rain
+  rain.run <- read.csv(paste0(fluxes.stores.dir,'fluxrain',qin.file,'.csv'))                         # Read rain
   rain.run <- xts(rain.run[,-1],time.qbf)                                          # Convert to xts
-  qof.run <- read.csv(paste0('fluxqof',qin.file,'.csv'))                           # Read qof
+  qof.run <- read.csv(paste0(fluxes.stores.dir,'fluxqof',qin.file,'.csv'))                           # Read qof
   qof.run <- xts(qof.run[,-1],time.qbf)                                            # Convert to xts
-  Qsim.run <- read.csv(paste0('qsim',qin.file,'.csv'))                             # Read Qsim
+  Qsim.run <- read.csv(paste0(fluxes.stores.dir,'qsim',qin.file,'.csv'))                             # Read Qsim
   Qsim.run <- xts(Qsim.run[,-1],time.qbf)                                          # Convert to xts
   compile.fluxes <- list(qin = qin.run, qbf = qbf.run, ae = ae.run,                # Compile fluxes 
                          rain = rain.run, qof = qof.run)                           # Into list
@@ -1442,18 +1440,18 @@ runPSOCalibrationTopmodel <- function(param.values,               # Parameter ve
 Forcing.input <- function(dt=24,dates.df=dates.df,watershed.area=watershed.area,...) {
   
   # Read in the data
-  data.directory <- paste('C:/Users/david/OneDrive/Desktop/EPA/',        # Define the directory string
-                          'EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/',                        # I'm breaking up the paste for readability
-                          '3 DATA/2-PROJECT1-ROBINSON-FOREST/',         # This isn't the working directory where the PSO items will be stored
-                          '3-UK-ROBINSONFOREST-DATA/TIME_SERIES/',      # This is just the WD for reading in input files
-                          sep='')  
-  setwd(data.directory)                                                 # Set the working directory
+  #data.directory <- paste('C:/Users/david/OneDrive/Desktop/EPA/',        # Define the directory string
+  #                        'EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/',                        # I'm breaking up the paste for readability
+  #                        '3 DATA/2-PROJECT1-ROBINSON-FOREST/',         # This isn't the working directory where the PSO items will be stored
+  #                        '3-UK-ROBINSONFOREST-DATA/TIME_SERIES/',      # This is just the WD for reading in input files
+  #                        sep='')  
+  #setwd(data.directory)                                                 # Set the working directory
   
-  Met.data.in <- read_csv('WeatherData_15min/CWS_Rain_clean_hourly.csv')                                    # Read in the data with forcing info
-  Q.data.in <- read_csv('Streamflow_15 min/Qobs2000_2015.csv')                              # Read in the observed Q data for falling rock (from Chris/Science base)
-  PET.data.in <- read_csv('WATER_pub_2013May2_2.csv')                   # Read in the PETdata
-  Temp.data.in <- read_csv('Air_Temp.csv')                              # Read in the temp data
-  Day.data.in <- read_csv('FR_precip.csv')                              # Read in the daylight hours
+  Met.data.in <- read_csv('HydroInputData/CWS_Rain_clean_hourly.csv')                                    # Read in the data with forcing info
+  Q.data.in <- read_csv('HydroInputData/Qobs2000_2015.csv')                              # Read in the observed Q data for falling rock (from Chris/Science base)
+  PET.data.in <- read_csv('HydroInputData/WATER_pub_2013May2_2.csv')                   # Read in the PETdata
+  Temp.data.in <- read_csv('HydroInputData/Air_Temp.csv')                              # Read in the temp data
+  Day.data.in <- read_csv('HydroInputData/FR_precip.csv')                              # Read in the daylight hours
   
   #if (precip.in == 'FR_precip.csv') {                                   # This code will read in data from one of three TS; prioritizing the gage at the top of the basin (could alternatively prioritize an average of the two gages at the top and bottom of the basin), then goes to the bottom, then to the average from TW
   #  Met.data.in <- Met.data.in %>% 
@@ -1808,11 +1806,11 @@ explicit.routing.instant <- function(FR.Spatial,run,model.timestep) {
 ### Function for spatial dynatopmodel components
 DynatopSpatialFunctionExplicitReaches <- function(){
   
-  # set WD
-  setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/1 GIS ANALYSIS/')
+  ## set WD
+  #setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/1 GIS ANALYSIS/')
   
   # Read in 1.5 m DEM, Flow length (unused), and soil Raster
-  fr1mDEM <- raster('Rasters/FR1meterDEM.tif')                                                # Read in the 1 m FR DEM
+  fr1mDEM <- raster('SpatialInputData/FR1meterDEM.tif')                                                # Read in the 1 m FR DEM
   
   # NOTE AS OF 7/6/2021 - there has been an update to the raster package such and now the raster function appears to no longer be reading the crs (coordinate system) of the raster correctly. 
   # The Crs is: +proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=999999.9998984 +datum=NAD83 +units=us-ft +no_defs 
@@ -1820,11 +1818,11 @@ DynatopSpatialFunctionExplicitReaches <- function(){
   crs(fr1mDEM) <- '+proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=999999.9998984 +datum=NAD83 +units=us-ft +no_defs'
   
   #fr1mFlowLen <- raster('Rasters/frFlowLen1m2.tif')                                           # Read in the flow length raster
-  FRSoils1m <- raster('Rasters/FRSoils1mMASK.tif')                                            # Read in the soils raster
+  FRSoils1m <- raster('SpatialInputData/FRSoils1mMASK.tif')                                            # Read in the soils raster
   crs(FRSoils1m) <- '+proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=999999.9998984 +datum=NAD83 +units=us-ft +no_defs'
   
   # Read in stream network
-  FR_drn <- shapefile('Shapes/FR4000StreamNet.shp')
+  FR_drn <- shapefile('SpatialInputData/FR4000StreamNet.shp')
   bkf.width <- 12.16*(FR_drn$USAreaM2/1000^2*0.386102)^0.42*0.3048                            # estimate the width of the channel using the regional curves from Ashal Berry's thesis. Note this isn't perfect bc this equation is being extrapolated to smaller channels. 
   FR_drn_table <- as.data.frame(cbind('link_no'= FR_drn$LINKNO,'ds_link'= FR_drn$DSLINKNO,
                                       'us_link_1' = FR_drn$USLINKNO1,'us_link_2'=FR_drn$USLINKNO2,
