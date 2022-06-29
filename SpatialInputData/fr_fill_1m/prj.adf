@@ -1,0 +1,9 @@
+Projection    STATEPLANE
+Fipszone      1600
+Datum         NAD83
+Spheroid      GRS80
+Units         FEET
+Zunits        FEET /* NAVD88_height_(ftUS) - VCS# =   6360
+Xshift        0.0
+Yshift        0.0
+Parameters    
