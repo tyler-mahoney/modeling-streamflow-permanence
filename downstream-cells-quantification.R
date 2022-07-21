@@ -2,7 +2,13 @@ library(sp)
 library(raster)
 library(dynatopmodel)
 library(topmodel)
-
+library(ecbtools)
+library(cluster)
+library(factoextra)
+library(tidyverse)
+library(NbClust)
+library(basicClEval)
+library(ggplot2)
 
 FR.HRU <- raster('SpatialInputData/FallingRockHRUs.tif')
 FR.fdr <- raster('SpatialInputData/fr_fdr')
@@ -10,6 +16,7 @@ FR.dem <- raster('SpatialInputData/fr1meterDEM.tif')
 FR.soils <- raster('SpatialInputData/FRSoils1mMask.tif')
 FR.fac.dinf <- raster('SpatialInputData/fr_fac_dinf.tif')
 TWI.dinf <- raster('C:/Users/david/OneDrive/Documents/ArcGIS/Projects/FallingRock/twi_dinf.tif')
+TWI.dinf[TWI.dinf==0] <- NA
 
 HRU.matrix <- as.matrix(FR.HRU)
 fdr.matrix <- as.matrix(FR.fdr)
@@ -93,7 +100,83 @@ weighting.matrix <- downstream.weighting.matrix/rowSums(downstream.weighting.mat
 
 ## Run Kmeans
 set.seed(123)
-plot(x=TWI.dinf.matrix,y=soils.matrix)
 
-Fr.kmeans.df <- data.frame('TWI'=as.vector(TWI.dinf.matrix),'soils'= as.vector(soils.matrix))
-Fr.kmeans <- kmeans(Fr.kmeans.df,centers = 20, iter.max = 5, nstart = 10)
+Fr.elev.bands <- cut(FR.dem, 4)
+TWI.dinf.cut <- cut(TWI.dinf,4)
+image(TWI.dinf.cut)
+Fr.stack <- stack(TWI.dinf.cut,FR.soils, Fr.elev.bands) 
+
+Fr.kmeans.2 <- raster.kmeans(Fr.stack, k = 20, iter.max=10, nstart = 10, geo = T, geo.weight = 1)
+writeRaster(Fr.kmeans.2,'C:/Users/david/OneDrive/Documents/ArcGIS/Projects/FallingRock/HRUs_21JULY22.tif',overwrite=T)
+x11()
+image(Fr.kmeans.2)
+
+Fr.kmeans.hist <- hist(as.vector(Fr.kmeans.2))
+x11()
+plot(Fr.kmeans.hist)
+set.seed(123)
+Fr.kmeans.df <- data.frame('elev.bands'=as.vector(Fr.elev.bands),'TWI'=as.vector(TWI.dinf.cut),'soils'=as.vector(FR.soils))
+Fr.kmeans.df <- Fr.kmeans.df[complete.cases(Fr.kmeans.df),]
+Fr.kmeans <- kmeans(Fr.kmeans.df,centers = 10, iter.max = 10, nstart = 10)
+Fr.kmeans.wcss <- wcss(Fr.kmeans.df,Fr.kmeans$cluster)
+
+x11()
+hist(Fr.kmeans$cluster)
+
+wss <- function(k) {
+  kmeans(Fr.kmeans.df,k,nstart=10)$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 40
+k.values <- 1:40
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values,wss)
+x11()
+
+plot(k.values,wss_values,type='b',pch=19,frame=F,xlab='Number of clusters',ylab='Total within-cluster sum of sq')
+
+Fr.HRU.vector <- data.frame('hru' = as.vector(Fr.kmeans.2))
+Fr.TWI.vector <- data.frame('TWI' = as.vector(TWI.dinf.cut))
+Fr.TWI.vector.nc <- data.frame('TWI.nc' = as.vector(TWI.dinf))
+Fr.soils.vector <- data.frame('soils' = as.vector(FR.soils))
+Fr.elev.bands.vector <- data.frame('Elev.bands' = as.vector(Fr.elev.bands))
+Fr.elev.bands.vector.nc <- data.frame('Elev.bands.nc'=as.vector(FR.dem))
+Fr.rasters.df <- data.frame(Fr.HRU.vector,Fr.TWI.vector,Fr.soils.vector,Fr.elev.bands.vector,Fr.elev.bands.vector.nc, Fr.TWI.vector.nc)
+Fr.rasters.df.clean <- Fr.rasters.df[complete.cases(Fr.rasters.df),]
+
+## Get the total ss within each cluster
+
+wss.raster <- function(k) {
+  Fr.kmeans.raster <- raster.kmeans(Fr.stack, k, iter.max=10, nstart = 10, geo = T, geo.weight = 1)
+  Fr.HRU.vector <- data.frame('hru' = as.vector(Fr.kmeans.raster))
+  Fr.TWI.vector <- data.frame('TWI' = as.vector(TWI.dinf.cut))
+  Fr.soils.vector <- data.frame('soils' = as.vector(FR.soils))
+  Fr.elev.bands.vector <- data.frame('Elev.bands' = as.vector(Fr.elev.bands))
+  Fr.rasters.df <- data.frame(Fr.HRU.vector,Fr.TWI.vector,Fr.soils.vector,Fr.elev.bands.vector)
+  Fr.rasters.df.clean <- Fr.rasters.df[complete.cases(Fr.rasters.df),]
+  within.ss <- wcss(Fr.rasters.df.clean[,-1],Fr.rasters.df.clean[,1])
+  return(within.ss$WCSS)
+}
+
+set.seed(123)
+# Compute and plot wss for k = 1 to k = 40
+k.values <- 1:40
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values,wss.raster)
+x11()
+
+plot(k.values,wss_values,type='b',pch=19,frame=F,xlab='Number of clusters',ylab='Total within-cluster sum of sq')
+
+fviz_cluster(Fr.rasters.df.clean[,1],Fr.rasters.df.clean[,-1])
+
+
+library(ggplot2)
+x11()
+ggplot(data=Fr.rasters.df.clean, aes(x=TWI,y=Elev.bands,col=hru))+geom_point()
+
+## Overlay the stream network atop the FR Hru raster
+Fr.stream <- raster('SpatialInputData/FR_stream_network.tif')
+Fr.HRU <- Fr.kmeans.2
+Fr.HRU.ov <- overlay(Fr.stream,Fr.HRU,fun=sum)
