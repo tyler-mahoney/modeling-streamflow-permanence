@@ -1,0 +1,11 @@
+Version 1.2.1
+------------------------------------------------------------------------------
+NEW FEATURES
+
+* Return flow is calculated by determining by any excess over limiting transmissivity of net upslope input.
+
+MAJOR CHANGES
+* A logical error has been fixed in the calculation of maximum subsurface lateral transmissivity. This meant that too much surface runoff was being generated at low values of ln_t0.
+
+
+

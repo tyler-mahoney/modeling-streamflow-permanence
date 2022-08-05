@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en"><Esri><CreaDate>20220805</CreaDate><CreaTime>13122200</CreaTime><ArcGISFormat>1.0</ArcGISFormat><SyncOnce>TRUE</SyncOnce><DataProperties><lineage><Process ToolSource="c:\program files\arcgis\pro\Resources\ArcToolbox\toolboxes\Spatial Analyst Tools.tbx\FlowLength" Date="20220805" Time="131222">FlowLength SpatialInputData/fr_fdr SpatialInputData\FlowLen_fr_fdr1.tif Downstream #</Process></lineage></DataProperties></Esri></metadata>

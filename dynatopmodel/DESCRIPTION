@@ -1,0 +1,21 @@
+Package: dynatopmodel
+Type: Package
+Title: Implementation of the Dynamic TOPMODEL Hydrological Model
+Version: 1.2.1
+Date: 2018-01-19
+Author: Peter Metcalfe, Keith Beven and Jim Freer
+Maintainer: Peter Metcalfe <p.metcalfe@lancaster.ac.uk>
+Description: A native R implementation and enhancement of the Dynamic TOPMODEL
+    semi-distributed hydrological model. Includes some preprocessing, utility and
+    routines for displaying outputs.
+Depends: R (>= 3.1),
+Imports: deSolve, maptools, rgdal, rgeos, zoo, xts, sp, raster,
+        lubridate, topmodel, methods, grDevices, stats, utils,
+        graphics, tools
+License: GPL-2
+LazyData: true
+RoxygenNote: 6.0.1
+NeedsCompilation: no
+Packaged: 2018-01-19 14:29:05 UTC; metcalfp
+Repository: CRAN
+Date/Publication: 2018-01-19 14:37:01 UTC
