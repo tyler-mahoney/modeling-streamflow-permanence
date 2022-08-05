@@ -1854,18 +1854,18 @@ DynatopSpatialFunctionExplicitReaches <- function(){
   correct.ratio <- FR.disc$weights[3:nrow(FR.disc$weights),1]/
     rowSums(FR.disc.explicit$weights[,1:34])[35:nrow(FR.disc.explicit$weights)]
   # View(correct.ratio)
-  if (rowSums(FR.disc.explicit$weights[,1:34])[35:nrow(FR.disc.explicit$weights)] == 0 &&
-      FR.disc$weights[3:nrow(FR.disc$weights),1] > 0) {
-    warning('There is zero flow in an explicit reach but positive flow in a lumped')
-  }
+  #if (rowSums(FR.disc.explicit$weights[,1:34])[35:nrow(FR.disc.explicit$weights)] == 0 &&
+  #    FR.disc$weights[3:nrow(FR.disc$weights),1] > 0) {
+   # warning('There is zero flow in an explicit reach but positive flow in a lumped')
+  #}
   
-  for (row in 1:(nrow(FR.disc$weights)-2)) {                                                 # here I am assuming that the ratios from HRUs into channels is correct for the lumped. So I am making sure that the ratios from HRUs in the explicit discretization matches that of the first
-    FR.disc.explicit$weights[(34+row),1:34] <- FR.disc.explicit$weights[(34+row),1:34]*
-      correct.ratio[row]
-    if (is.na(FR.disc.explicit$weights[(34+row),1:34])) {
-      FR.disc.explicit$weights[(34+row),1:34] <- 0
-    }
-  }
+  ##for (row in 1:(nrow(FR.disc$weights)-2)) {                                                 # here I am assuming that the ratios from HRUs into channels is correct for the lumped. So I am making sure that the ratios from HRUs in the explicit discretization matches that of the first
+  #  FR.disc.explicit$weights[(34+row),1:34] <- FR.disc.explicit$weights[(34+row),1:34]*
+  #    correct.ratio[row]
+  #  if (is.na(FR.disc.explicit$weights[(34+row),1:34])) {
+  #    FR.disc.explicit$weights[(34+row),1:34] <- 0
+  #  }
+  #}
   
   FR.disc$groups$area <- FR.disc$groups$area/10.7639                                         # Convert from ft2 to m2
   FR.disc.explicit$groups$area <- FR.disc.explicit$groups$area/10.7639                       # convert from ft2 to m2
