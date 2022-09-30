@@ -1,0 +1,206 @@
+---
+title: "Test Model Run"
+output: html_notebook
+---
+
+# Step 1: Read in required libraries
+
+```{r}
+library(dynatopmodel)
+library(sp)
+library(raster)
+library(reticulate)
+library(topmodel)
+library(ggplot2)
+library(mapview)
+library(hydroPSO)                                               # Read in hydroPSO algorithm
+library(hydroGOF)                                               # Read in hydroGOF package (goodness of fit)
+library(hydroTSM)                                               # Read in hydroTSM package
+library(boot)                                                   # Read in boot package
+library(zoo)                                                    # Read in zoo package for time series analysis 
+library(sensitivity)                                            # Read in the sensitivity analysis package
+library(xts)                                                    # Read in the xts package also for time series 
+library(ggplot2)                                                # Read in ggplot2 package for figure 
+library(dplyr)                                                  # Read in dplyr package
+library(readr)                                                  # Read in read r package
+library(lubridate)                                              # Read in lubridate for date manipulation
+library(Evapotranspiration)                                     # Read in the Evapotranspiration packahge 
+library(rasterVis)                                              # Read in the rasterVis package for raster 
+library(dismo)                                                  # Read in dismo package for k fold cross
+library(rgl)                                                    # Read in the rgl package for 3D scatter plots
+library(matrixStats)                                            # Read in the library for matrixStats
+library(gridExtra)                                              # Read in the gridExtra package for GGPLOT2
+library(tidyquant)
+
+```
+
+# Step 2: Load in Spatial Data 
+Note, this should be saved from the 'run-modular-discretization.Rmd' Notebook 
+
+```{r}
+# Read in the data 
+read.spatial <- readRDS('SpatialInputData/dynatop_spatial.RData')
+disc <- read.spatial$disc                                      
+RoutingTable <- read.spatial$RoutingTable                      
+explicit.reach.table <- read.spatial$explicit.ChanTable         
+
+# Read the HRUs and assign unique soil groups  
+no.hru <- as.numeric(length(unique(disc$hru)))                  
+ 
+soils <- matrix(nrow=no.hru,ncol=1)                                        # Initialize the soils 
+
+for (i in 1:no.hru) {                                           # The loop will output the soil type 
+  print(unique(disc$hru)[i])
+  soil.type <- unique(disc$layers$soils[disc$hru==unique(disc$hru)[i]])                   # Identifies the soil type for a corresponding HRU
+  soils[i] <- soil.type[i]                                                                          
+}                                                               # End the loop
+disc$groups <- cbind(disc$groups,soils)                   # The soil type is bound to the groups layer
+
+```
+
+# Step 3: Read in the hydrometeorological data 
+Note, this should be saved from the 'run-modular-hydro-data.Rmd' Notebook. 
+Reminder: if any functions are used to develop the time series that are created within, they must be loaded prior to running the chunk. For initial testing, Forcing.input was loaded from the Calibration_02SEPT21_ExplicitReaches.R document
+
+```{r}
+# Specify the Model Time Step (and internal time step)
+model.timestep <- 2                                             # Time step of the model (in Hours)
+in.timestep <- 1           #2                                     # Specify the number of internal time steps (unitless) - this is for the internal loop to calculate the baseflow
+
+# Specify Calibration Period
+calibration.initial <- "2003-11-23 20:00:00"                    # Calibration start       # 
+calibration.final <- "2006-09-30 20:00:00"                      # Calibration end         # 
+
+# Specify Warmup Period
+warmup.initial <- "2003-05-23 20:00:00"                         # Warmup start            #  
+warmup.final <- "2003-11-24 00:00:00"                           # Warmup end              # 
+
+#NOTE: FOR SOME REASON AT THIS TIME STEP THE WINDOW FUNCTION IS ADDING TWO TIME STEPS 
+
+# Concatinate the dates
+dates.df <- data.frame(calibration.initial, calibration.final,  # Concatinate the dates into a df 
+                       warmup.initial, warmup.final)            # Continued
+names.dates <- c('calibration.initial','calibration.final',     # Create names for the df
+                 'warmup.initial','warmup.final')               # Continued
+names(dates.df) <- names.dates                                  # Specify the date names 
+
+# Specify the watershed area
+watershed.area <- sum(disc$groups$area)                                     # Specify the watershed area (m^2) for Falling Rock
+
+# Load in Met and Qobs time series from csv, manipulate to the desired time step, and write the function output to variables
+# NOTE: we would also want to put validation initial/final dates.
+# If the validation and calibration periods are not one after the other, need a second warm up period. 
+input.timeseries <- Forcing.input(dt=model.timestep,            # Run the forcing input function
+                                  dates.df=dates.df,            # Start and end dates and watershed area
+                                  watershed.area=watershed.area,# Output is a list of three zoo objects for the rain, PET, and Qobs time series
+                                  )                             # Input
+rain.calib <- input.timeseries$P[1:(length(input.timeseries$P))]                     # Writing the P TS to a variable
+PET.calib <- input.timeseries$PET[1:(length(input.timeseries$PET))]                  # Writing the PET TS to a variable
+Q.obs.calib <- input.timeseries$Qobs[1:(length(input.timeseries$Qobs))]              # Writing the Qobs TS to a variable
+dates.cal.warm <- time(rain.calib)  
+```
+
+# Step 4: Set up the parameter values 
+```{r}
+
+# Set up the model parameters; Read in min and max values (these values should be based on the literature).
+v.of.min <- 10; v.of.max <- 150                                 # Overland flow velocity (m/hr) min and max
+m.min <- -9.908; m.max <- -2.813                                # Form of exponential decline in conductivity (m) min and max
+srz.max.min <-  .01; srz.max.max <- .75                         # Max root zone storage (m) min and max
+srz.0.min <- 0.5; srz.0.max <- 1                                # Initial root zone storage (fraction) min and max
+v.chan.min <- 500; v.chan.max <- 7000                           # Channel routing velocity (m/hr) min and max
+natlog.T0.min <- 3; natlog.T0.max <- 16                         # Lat saturated transmissivity (m^2/hr) min and max
+sd.max.min <- 0.2; sd.max.max <- 0.8                            # Max effective deficit of sat zone (m) min and max
+td.min <- 0.01; td.max <- 100                                   # Unsat zone time delay (hr/m) min and max
+mann.n.min <- 0.01; mann.n.max <- .15                           # Manning's (unitless) n min and max
+S0.min <- 0.01; S0.max <- 0.3                                   # Nominal slope (fraction) min and max
+CD.min <-  0.01; CD.max <- 0.5                                  # Capilary drive (unused) min and max
+k0.min <-  0.1; k0.max <- 1000                                  # Initial saturated hydraulic conductivity (m/hr; unused) min and max
+m1.min <- -9.908; m1.max <- -2.813                              # Assign range for the first m     
+m2.min <- -9.908; m2.max <- -2.813                              # Assign range for the second m
+m3.min <- -9.908; m3.max <- -2.813                              # Assign range for the third m 
+
+# Concatinate parameter minmum, maximum, and names. Assign names to vectors
+lower <- c(v.of.min, m.min, srz.max.min, srz.0.min, v.chan.min, # Vector of lower parametr values
+           natlog.T0.min, sd.max.min, td.min,                   # Will be used to generate parameter sets 
+           mann.n.min, S0.min, CD.min, k0.min,                  # Continued
+           m1.min, m2.min, m3.min)                              # During calibration
+
+upper <- c(v.of.max, m.max, srz.max.max, srz.0.max, v.chan.max, # Vector of upper parameter values
+           natlog.T0.max, sd.max.max, td.max,                   # Will be used to generate parmeter sets 
+           mann.n.max, S0.max, CD.max, k0.max,                  # Continued 
+           m1.max, m2.max, m3.max)                              # During Calibration 
+
+name.params <- c('v.of', 'm','srz.max','srz.0',                 # Create names of all parameters
+                 'v.chan','natlog.T0','sd.max',                 # Included in Dynatopmodel
+                 'td','mann.n','S0','CD','k0',                  # Continued
+                 'm1','m2','m3')                                # To be implemented within the uncertainty and calibration
+names(lower) <- name.params                                     # Specify names of columns for the lower part of the parameter space
+names(upper) <- name.params                                     # Specify names of columns for the upper part of the parameter space
+
+params <- lower+(upper-lower)/2                                 # Unused - but for a test run of the model
+
+params.best.FC4 <- c(0.978,-6.75, 0.679,0.981,500,5.76,.606,1.58,0.0376,.181,.136,.0693,-9.91,-3.22,-2.81)
+
+```
+
+# Step 5: Run the model with random values and the optimal parameterziation from the previous model
+
+Note: I'm not expecting for the calibration statistics for either model to be particularly good initially since this is a different spatial parameterization... but we'll see. 
+
+```{r}
+# Run a test of the model to make sure that things look good before running the PSO calibration 
+result.test <- runPSOCalibrationTopmodel(param.values=params,                      # TEST - Run the model with the optimal parameter set
+                                         inner.timesteps = in.timestep,            # input the inner.timesteps
+                                         rains = rain.calib, PETs=PET.calib,       # All forcing components are the same
+                                         obss=Q.obs.calib, discs=disc,          # Spatial information comes from the dynatop spatial function
+                                         RoutingTables=NULL,                       # See above
+                                         dates.dfs = dates.df)                     # Calibration end date input
+result.test.FC4 <- runPSOCalibrationTopmodel(param.values=params.best.FC4,                      # TEST - Run the model with the optimal parameter set
+                                             inner.timesteps = in.timestep,            # input the inner.timesteps
+                                             rains = rain.calib, PETs=PET.calib,       # All forcing components are the same
+                                             obss=Q.obs.calib, discs=disc,          # Spatial information comes from the dynatop spatial function
+                                             RoutingTables=NULL,                       # See above
+                                             dates.dfs = dates.df)                     # Calibration end date input
+
+```
+
+# Step 6: plot the data 
+
+```{r}
+out.sim <- result.test.FC4$run$qsim
+obs <- result.test.FC4$run$qobs
+
+out.sim <- out.sim[1:length(obs)]
+
+out <- data.frame('sim'=out.sim,'obs'=obs)
+
+NSE(sim=out$sim,obs=out$x)
+NSE(sim=log(out$sim),obs=log(out$x))
+KGE(sim=out$sim,obs=out$x)
+KGE(sim=log(out$sim),obs=log(out$x))
+
+plot(out$sim,type='l') 
+lines(out$x,type='l',col='red')
+
+
+out.sim.2 <- result.test$run$qsim
+obs.2 <- result.test$run$qobs
+
+out.sim.2 <- out.sim.2[1:length(obs.2)]
+
+out.2 <- data.frame('sim'=out.sim.2,'obs'=obs.2)
+
+
+plot(out.2$sim,type='l',ylim=c(0,0.0005)) 
+lines(out.2$x,type='l',col='red')
+
+NSE(sim=out.2$sim,obs=out.2$x)
+NSE(sim=log(out.2$sim+.0000000001),obs=log(out.2$x+.0000000001))
+KGE(sim=out.2$sim,obs=out.2$x)
+KGE(sim=log(out.2$sim+.0000000001),obs=log(out.2$x+.0000000001))
+
+```
+Okay good... the model works with the new spatial discretization. 
+
+Now on to the hydromet inputs... 

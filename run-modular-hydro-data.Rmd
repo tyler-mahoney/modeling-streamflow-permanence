@@ -1,0 +1,256 @@
+---
+title: "Run Modular Hydro Data"
+output: html_notebook
+---
+
+# Introduction
+
+The objective of this notebook is to generate a list or dataframe that contains all hydrometeorological data used in dynamic TOPMODEL. This notebook is meant to replace the workflow for the *Forcing.input* function for the modified dynamic TOPMODEL described by Mahoney et al. (2022) *J. Hydrol*.
+
+# Step 1: Load in Libraries
+
+```{r}
+library(xts)
+library(zoo)
+library(lubridate)
+library(dplyr)
+library(readr)
+library(hydroGOF)
+library(dynatopmodel)
+library(Evapotranspiration)
+```
+
+# Step 2: Generate Time Series and Load Data
+
+Note: the user **must** determine which dates to run the simulation and the model time step prior to executing this code. Periods for model warm up should also be specified. To run the model, it is necessary to generate time series for: 
+-   Precipitation
+-   PET
+
+To evaluate the model, it is necessary to generate time series for: 
+-   Observed flow
+-   Flow state
+
+The user must specify:
+-   Start and end dates for the model
+-   Model time step
+-   Start and end dates for the warm up period
+-   In section 2.3 the user must input the file names of the hydro met data.
+
+It is also necessary for the user to enter the watershed area in question, so please have that handy. 
+
+## Step 2.1: Generate a blank time series
+
+```{r}
+# Specify the watershed area (in m^2)
+watershed.area <- 795975.6
+
+# Specify model timestep (in hours)
+dt <- 1
+
+# Specify Warmup Period
+warmup.date.start <- "2003-05-24 00:00:00"
+warmup.date.end <- "2003-11-23 22:00:00"
+
+calibration.initial <- "2003-11-24 00:00:00"
+calibration.final <- "2006-10-01 00:00:00"
+
+
+warmup.initial <- as.POSIXct(warmup.date.start,tz='UTC')            
+warmup.final <- as.POSIXct(warmup.date.end,tz='UTC') 
+
+# Specify Calibration Period
+calibration.initial <- as.POSIXct(calibration.initial,tz='UTC')        
+calibration.final <- as.POSIXct(calibration.final,tz='UTC')                      
+
+# Generate the time steps: 
+time.step <- paste(dt,'hour')
+time_steps <- seq.POSIXt(from=(warmup.initial),to=(calibration.final),by=time.step)
+
+# Generate the output
+dynatop_hydro_met_data <- data.frame(matrix(nrow=length(time_steps),ncol=1))
+names(dynatop_hydro_met_data) <- 'date_time'
+dynatop_hydro_met_data$date_time <- time_steps
+```
+
+## Step 2.2: (One time only) Generate hourly discharge data
+Note: In this step, we will generate an hourly time series for flow for Little Millseat. This only needs to be done first. The user should input the location of the CSV with the Q data for timeseries manipulation, if it is needed. 
+```{r}
+try(Qobs.1971.1999 <- read.csv('HydroInputData/LM_Qobs1971_1999.csv'))
+try(Qobs.2000.2018 <- read.csv('HydroInputData/LM_Qobs2000_2018.csv'))
+
+if(is.null(Qobs.1971.1999) | is.null(Qobs.2000.2018)) {
+
+raw.Qin <- read.csv('HydroInputData/LMStreamflowCompiled.csv')
+
+raw.Qin$rawDate <- mdy_hm(raw.Qin$Time)
+raw.Qin$roundedTime <- round_date(raw.Qin$rawDate,'15 minutes')
+Qobs.clean <- raw.Qin %>% select(streamflow_cfs=Streamflow_CFS,rawDate=rawDate, roundTime=roundedTime)
+Qobs.clean <- Qobs.clean[!duplicated(Qobs.clean$roundTime),]
+
+# Create a time series and join with the data
+start.Qobs <- as.POSIXct(raw.Qin$roundedTime[1])
+end.Qobs <- as.POSIXct(raw.Qin$roundedTime[length(raw.Qin$roundedTime)])
+Qobs.clean.final <- data.frame(roundTime=seq.POSIXt(start.Qobs,end.Qobs,by='15 mins'))
+Qobs.clean.final <- left_join(Qobs.clean.final,Qobs.clean,by='roundTime')
+
+# Approximate the streamflow for steps without a value
+Qobs.clean.final$streamflow_cfs <- as.numeric(Qobs.clean.final$streamflow_cfs)
+Qobs.clean.final$ApproxStreamflow_cfs <- na.approx(Qobs.clean.final$streamflow_cfs)
+
+# Break up the date frame from 1971-1999 and 2000-2015
+
+Qobs.1971.1999 <- Qobs.clean.final[1:which(Qobs.clean.final$roundTime=="1999-12-31 22:45:00"),]
+Qobs.2000.2018 <- Qobs.clean.final[(which(Qobs.clean.final$roundTime=="1999-12-31 22:45:00")+1):length(Qobs.clean.final$ApproxStreamflow_cfs),]
+write.csv(Qobs.1971.1999,'HydroInputData/LM_Qobs1971_1999.csv')
+write.csv(Qobs.2000.2018,'HydroInputData/LM_Qobs2000_2018.csv')
+}
+
+rm(Qobs.1971.1999)
+rm(Qobs.2000.2018)
+```
+
+## Step 2.3: Load in the meteorological data
+
+We will also create a column that allows us to join the full time series with the clean time series. 
+```{r}
+# Import the data 
+Met.data.in <- read.csv('HydroInputData/CWS_Rain_clean_hourly.csv')
+Met.data.in$date_time <- ymd_hms(Met.data.in$fullDate)
+Q.data.in <- read.csv('HydroInputData/LM_Qobs2000_2018.csv')
+Q.data.in$date_time <- ymd_hms(Q.data.in$roundTime)
+PET.data.in <- read.csv('HydroInputData/WATER_pub_2013May2_2.csv')
+PET.data.in$date_time <- mdy_hm(PET.data.in$date2)
+Temp.data.in <- read.csv('HydroInputData/Air_Temp.csv')
+Temp.data.in$date_time <- mdy_hm(Temp.data.in$date2)
+Day.data.in <- read.csv('HydroInputData/FR_precip.csv')    # Daylight length
+Day.data.in$date_time <- mdy_hm(Day.data.in$date2)
+
+# Convert these time series to zoo objects (required for dynatopmodel)
+P.zoo <- zoo(Met.data.in$precip.mm,Met.data.in$date_time)                           # Precip as zoo
+PET.zoo <- zoo(PET.data.in$pet_mm,PET.data.in$date_time)                                # PET as zoo
+Qobs.zoo <- zoo(Q.data.in$ApproxStreamflow_cfs,Q.data.in$date_time)                 # Qobs as zoo
+Temp.min.zoo <- zoo((Temp.data.in$DailyMin_degF-32)*(5/9),Temp.data.in$date_time)   # Min daily temp
+Temp.max.zoo <- zoo((Temp.data.in$DailyMax_degF-32)*(5/9),Temp.data.in$date_time)   # Max daily temp
+day.zoo <- zoo(Day.data.in$daylight_hr,Temp.data.in$date_time)                      # Daylight hours
+```
+
+## Step 2.4 Run the Hamon Equation for PET 
+```{r}
+
+Hamon <- function(data=PET.data) {
+  Ta <- (data$Tmax + data$Tmin)/2
+  vs_Tmax <- 0.6108 * exp(17.27 * data$Tmax/(data$Tmax + 237.3))
+  vs_Tmin <- 0.6108 * exp(17.27 * data$Tmin/(data$Tmin + 237.3))
+  vas <- (vs_Tmax + vs_Tmin)/2
+  ET_Hamon.Daily <- 0.55 * 25.4 * (data$n/12)^2 * (216.7 * vas * 10/(Ta + 273.3))/100
+  ET.Daily <- ET_Hamon.Daily
+  return(ET.Daily)
+}
+
+# Window to desired time
+Tmax=window(Temp.max.zoo,start=Day.data.in$date_time[1],
+              end=Day.data.in$date_time[length(Day.data.in$date_time)])
+Tmin=window(Temp.min.zoo,start=Day.data.in$date_time[1],
+              end=Day.data.in$date_time[length(Day.data.in$date_time)])
+  
+for (i in 1:length(Tmax)) {
+  if (is.na(Tmax[i])) {
+    Tmax[i]=Tmax[i-1]
+  }
+  
+  if (is.na(Tmin[i])) {
+    Tmin[i]=Tmin[i-1]
+  }
+}
+  
+# Calculate the PET
+PET.data <- list(Tmax=Tmax,
+                 Tmin=Tmin,
+                 n=day.zoo)  
+
+PET.hamon <- Hamon(data=PET.data)
+
+```
+
+
+## Step 2.5: Convert units, specify the window for the data, and (dis)aggregate to the appropriate time step
+
+-   note - this might not work if given a total precip for the day... 
+-   Need to double check this, however. 
+```{r}
+# Convert the time series form mm/day to m/hr - the requisite of dynatopmodel
+P.mph.full <- P.zoo*(1/1000)                                            # convert to (m/hr) previously mm/hr
+PET.mph.full <- PET.zoo*(1/1000)*(1/24)                                 # convert to (m/hr)
+Qobs.mph.full <- Qobs.zoo*60*60*(1/watershed.area)*(1/35.3147)          # convert to (m/hr)-previously cfs
+PET.mph.full.hamon <- PET.hamon*(1/1000)*(1/24)
+
+# Create a function to resample the data
+resample.xts <- function(time.series,dt,fun, warmup.initial, calibration.final) {
+  ts.data.frame <- data.frame('value'=time.series)
+  ts.data.frame$date.time <- time(time.series)
+  
+  # Determine the time step of the input
+  input.time.step <- ts.data.frame$date.time[2]-ts.data.frame$date.time[1]
+  if (input.time.step == dt/24) {
+    out.time.series <- window(x=time.series,start=warmup.initial,end=calibration.final)
+  } else if (input.time.step < dt/24) {
+    out.time.series <- aggregate_xts(ser=time.series,dt=dt,fun=fun)
+    out.time.series <- window(x=out.time.series,start=warmup.initial,end=calibration.final)
+  } else {
+    
+    # Create a time series and join with the data
+    start.ts <- warmup.initial
+    end.ts <- calibration.final
+    time.steps <- data.frame('date.time'=seq.POSIXt(start.ts,end.ts,by=paste0(dt,' hour')))
+    time.series.blanks <- left_join(time.steps,ts.data.frame,by='date.time')
+    
+    if (is.na(time.series.blanks$value[1])) {
+      time.series.blanks$value[1] <- time.series.blanks$value[which(!is.na(time.series.blanks$value))[1]]
+    }
+    
+    if (is.na(time.series.blanks$value[length(time.series.blanks$value)])) {
+      time.series.blanks$value[length(time.series.blanks$value)] <- time.series.blanks$value[
+        which(!is.na(time.series.blanks$value))[length(which(!is.na(time.series.blanks$value)))]]
+    }
+
+    # Approximate for steps without a value
+    time.series.blanks$ApproxValue <- na.approx(time.series.blanks$value)
+    
+    out.time.series <- zoo(time.series.blanks$ApproxValue,time.series.blanks$date.time)
+  }
+  
+  return(out.time.series)
+}
+
+# Resample each time series to be at the proper time step
+P.mph.resample <- resample.xts(time.series = P.mph.full,dt=dt,fun=mean,
+                               warmup.initial = warmup.initial,
+                               calibration.final = calibration.final)
+  
+PET.mph.resample <- resample.xts(time.series = PET.mph.full,dt=dt,fun=mean,
+                               warmup.initial = warmup.initial,
+                               calibration.final = calibration.final)
+
+
+Qobs.mph.resample <- resample.xts(time.series = Qobs.mph.full,dt=dt,fun=mean,
+                               warmup.initial = warmup.initial,
+                               calibration.final = calibration.final)
+  
+PET.mph.hamon.resample <- resample.xts(time.series = PET.mph.full.hamon,dt=dt,fun=mean,
+                               warmup.initial = warmup.initial,
+                               calibration.final = calibration.final)
+  
+```
+
+# Step 3: Combine the time series into a single output. 
+```{r}
+
+input.timeseries <- list(P=P.mph.resample,PET=PET.mph.hamon.resample,
+                         Qobs=Qobs.mph.resample)
+```
+
+
+
+
+
+

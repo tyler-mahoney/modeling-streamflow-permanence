@@ -1,5 +1,5 @@
 ---
-title: "Run Spatial Discretization"
+title: "Run Modular Discretization"
 output: html_notebook
 ---
 
@@ -49,9 +49,9 @@ Note: This code will calculate the TWI using the D8 flow direction. It is possib
 
 ```{r}
 # Read in the rasters that we'd need for HRU creation
-dem <- raster('SpatialInputData/fr1meterDEM.tif')
-soils <- raster('SpatialInputData/FRSoils1mMask.tif')
-TWI.dinf <- raster('C:/Users/david/OneDrive/Desktop/Mahoney Research/2-Mahoney-EPA/modeling-streamflow-permanence/SpatialInputData/fr_twi_dinf.tif')
+dem <- raster('SpatialInputData/LM_1meterDEM.tif')
+soils <- raster('SpatialInputData/LMSoils1mMask.tif')
+TWI.dinf <- raster('C:/Users/david/OneDrive/Desktop/Mahoney Research/2-Mahoney-EPA/modeling-streamflow-permanence/SpatialInputData/LM_twi_dinf.tif')
 TWI.dinf[TWI.dinf==0] <- NA # We do this because the areas outside of the raster have a value 0 and we want these to be set to NA
 
 
@@ -762,6 +762,7 @@ dynatop.spatial <- list('DEM'=DEM,'Soils'=Soils,'layers'=layers,'disc'=disc,
                         'RoutingTable'=RoutingTable,'explicit.disc'=explicit.disc,
                         'explicit.RoutingTable'=explicit.RoutingTable,
                         'explicit.ChanTable'=explicit.ChanTable)
+saveRDS(dynatop.spatial,'SpatialInputData/dynatop_spatial.RData')
 
 ```
 
