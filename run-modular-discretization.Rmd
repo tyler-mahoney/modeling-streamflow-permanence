@@ -217,11 +217,11 @@ reclassify.matrix$becomes <- mean.twi$id.new
 HRU <- reclassify(HRU,reclassify.matrix)
 
 ## Overlay the stream network atop the Hru raster
-stream <- raster('SpatialInputData/FR_stream_network.tif')
+stream <- raster('SpatialInputData/LM_stream_network.tif')
 stream[stream==0] <- NA
 HRU <- HRU*10+max(max(unique(stream)),100)               # Uniquely identifying the upland HRUs
 HRU[stream>0] <- stream[stream>0]                     # Identify the cells from the HRU raster that overlap with the stream, set those equal to the reach number 
-writeRaster(HRU,"SpatialInputData/FR_HRU.tif",overwrite=T)
+writeRaster(HRU,"SpatialInputData/LM_HRU.tif",overwrite=T)
 
 image(HRU)
 
@@ -235,8 +235,8 @@ stream.lump[stream >= 1] <- 1
 HRU.lump <- HRU
 HRU.lump[stream.lump>0] <- stream.lump[stream.lump>0]
 
-writeRaster(HRU.lump,"SpatialInputData/FR_HRU_lump.tif",overwrite=T)
-writeRaster(stream.lump,"SpatialInputData/FR_stream_lump.tif",overwrite=T)
+writeRaster(HRU.lump,"SpatialInputData/LM_HRU_lump.tif",overwrite=T)
+writeRaster(stream.lump,"SpatialInputData/LM_stream_lump.tif",overwrite=T)
 
 image(HRU.lump)
 
