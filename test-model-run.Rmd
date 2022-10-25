@@ -39,7 +39,7 @@ Note, this should be saved from the 'run-modular-discretization.Rmd' Notebook
 
 ```{r}
 # Read in the data 
-read.spatial <- readRDS('SpatialInputData/dynatop_spatial.RData')
+read.spatial <- readRDS('SpatialInputData/dynatop_spatial_LM.RData')
 disc <- read.spatial$disc                                      
 RoutingTable <- read.spatial$RoutingTable                      
 explicit.reach.table <- read.spatial$explicit.ChanTable         

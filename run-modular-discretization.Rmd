@@ -218,7 +218,7 @@ HRU <- reclassify(HRU,reclassify.matrix)
 
 ## Overlay the stream network atop the Hru raster
 stream <- raster('SpatialInputData/LM_stream_network.tif')
-stream[stream==0] <- NA
+stream[stream==as.matrix(stream)[1,1]] <- NA             # note, this is a possible cause for a bug if cell [1,1] in the raster is actually a reach...
 HRU <- HRU*10+max(max(unique(stream)),100)               # Uniquely identifying the upland HRUs
 HRU[stream>0] <- stream[stream>0]                     # Identify the cells from the HRU raster that overlap with the stream, set those equal to the reach number 
 writeRaster(HRU,"SpatialInputData/LM_HRU.tif",overwrite=T)
@@ -247,9 +247,9 @@ image(HRU.lump)
 Note - I'm going to do this with the mapview function in R, but this could be done using the arcpy and arcgis modules in python. The reason for not using python is because if we interrupt the kernel we'll have to reload variables from above
 
 ```{r}
-mapView(HRU, maxpixels =  2102000) + mapView(TWI.zonal, maxpixels =  2102000) + 
-  mapView(HRU.lump,maxpixels =  2102000) + mapView(stream.lump, maxpixels =  2102000) +
-  mapView(stream,maxpixels =  2102000)
+mapView(HRU, maxpixels =  length(as.matrix(dem))) + mapView(TWI.zonal, maxpixels =  length(as.matrix(dem))) + 
+  mapView(HRU.lump,maxpixels =  length(as.matrix(dem))) + mapView(stream.lump, maxpixels =  length(as.matrix(dem))) +
+  mapView(stream,maxpixels =  length(as.matrix(dem)))
 
 ```
 
@@ -260,6 +260,7 @@ In this step, we will create the weighting matrix to run the dynatopmodel analys
 ### Step 4.1: Calculate the explicit downstream matrix
 
 This process returns the value of the HRU immediately downstream of a cell. This algorithm strictly works for a D8 flow direction, but could be expanded for DInf at a later time.
+**Make sure to specify the correct names of the files**
 
 **Make sure to switch over to the R kernel**
 
@@ -268,8 +269,8 @@ This process returns the value of the HRU immediately downstream of a cell. This
 library(sp)
 library(raster)
 
-HRU <- raster('SpatialInputData/FR_HRU.tif')
-fdr <- raster('SpatialInputData/fr_fdr')
+HRU <- raster('SpatialInputData/LM_HRU.tif')
+fdr <- raster('SpatialInputData/lm_fdr')
 
 
 HRU.matrix <- as.matrix(HRU)
@@ -362,12 +363,13 @@ rowSums(weighting.matrix)
 ### Step 4.3: Initialize the lumped downstream matrix
 
 Note that the current implementation of dynatopmodel does not support the explicit streams, as far as I am aware. Dynatop may, but I haven't investigated the model in depth as of 8/3/2022
+**Make sure to change the names of the files** 
 
 ```{r}
 # Next, create the lumped matrix
 
-HRU.lump <- raster('SpatialInputData/FR_HRU_lump.tif')
-fdr <- raster('SpatialInputData/fr_fdr')
+HRU.lump <- raster('SpatialInputData/LM_HRU_lump.tif')
+fdr <- raster('SpatialInputData/lm_fdr')
 
 HRU.lump.matrix <- as.matrix(HRU.lump)
 fdr.matrix <- as.matrix(fdr)
@@ -602,9 +604,10 @@ In this step, we will create routing matrix that bins lists the length of each c
 
 ```{r}
 # Determine the flow length from each cell in the stream to the catchment outlet
-outFlowLength <- arcpy$sa$FlowLength('SpatialInputData/fr_fdr',"DOWNSTREAM")
+outFlowLength <- arcpy$sa$FlowLength('SpatialInputData/lm_fdr',"DOWNSTREAM")
 # Note - the next line only needs to be saved once. 
-#outFlowLength$save(paste0(getwd(),'/SpatialInputData/Flow_length.tif'))
+arcpy$env$overwriteOutput <- T
+outFlowLength$save(paste0(getwd(),'/SpatialInputData/Flow_length.tif'))
 
 Flow.length <- raster('SpatialInputData/Flow_length.tif')
 Flow.length.stream <- stream.lump
@@ -744,7 +747,7 @@ explicit.disc$weights <- as.matrix(weighting.matrix.explicit.in)
 explicit.RoutingTable <- RoutingTable
 
 # explicit.ChanTable
-drn <- shapefile('SpatialInputData/FR4000StreamNet.shp')
+drn <- shapefile('SpatialInputData/LM4000StreamNet.shp')
 bkf.width <- 12.16*(drn$USAreaM2/1000^2*0.386102)^0.42*0.3048  # estimate the width of the channel using the regional curves from Ashland Berry's thesis. Note this isn't perfect bc this equation is being extrapolated to smaller channels.
 explicit.ChanTable <- as.data.frame(cbind('link_no'= drn$LINKNO,'ds_link'= drn$DSLINKNO,
                                     'us_link_1' = drn$USLINKNO1,'us_link_2'=drn$USLINKNO2,
@@ -762,7 +765,7 @@ dynatop.spatial <- list('DEM'=DEM,'Soils'=Soils,'layers'=layers,'disc'=disc,
                         'RoutingTable'=RoutingTable,'explicit.disc'=explicit.disc,
                         'explicit.RoutingTable'=explicit.RoutingTable,
                         'explicit.ChanTable'=explicit.ChanTable)
-saveRDS(dynatop.spatial,'SpatialInputData/dynatop_spatial.RData')
+saveRDS(dynatop.spatial,'SpatialInputData/dynatop_spatial_LM.RData')
 
 ```
 
