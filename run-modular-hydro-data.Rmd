@@ -81,10 +81,11 @@ try(Qobs.2000.2018 <- read.csv('HydroInputData/LM_Qobs2000_2018.csv'))
 if(is.null(Qobs.1971.1999) | is.null(Qobs.2000.2018)) {
 
 raw.Qin <- read.csv('HydroInputData/LMStreamflowCompiled.csv')
-
+colnames(raw.Qin) <- c('Time','Temp_C','Stage.Height.ft.','StageHt.Corrected.','StageHt_RMK','Streamflow_CFS')
 raw.Qin$rawDate <- mdy_hm(raw.Qin$Time)
+
 raw.Qin$roundedTime <- round_date(raw.Qin$rawDate,'15 minutes')
-Qobs.clean <- raw.Qin %>% select(streamflow_cfs=Streamflow_CFS,rawDate=rawDate, roundTime=roundedTime)
+Qobs.clean <- raw.Qin %>% select(rawDate=rawDate, roundTime=roundedTime,streamflow_cfs=Streamflow_CFS,)
 Qobs.clean <- Qobs.clean[!duplicated(Qobs.clean$roundTime),]
 
 # Create a time series and join with the data
@@ -107,6 +108,8 @@ write.csv(Qobs.2000.2018,'HydroInputData/LM_Qobs2000_2018.csv')
 
 rm(Qobs.1971.1999)
 rm(Qobs.2000.2018)
+
+
 ```
 
 ## Step 2.3: Load in the meteorological data
@@ -247,10 +250,20 @@ PET.mph.hamon.resample <- resample.xts(time.series = PET.mph.full.hamon,dt=dt,fu
 
 input.timeseries <- list(P=P.mph.resample,PET=PET.mph.hamon.resample,
                          Qobs=Qobs.mph.resample)
+
+dynatop.hydro.met <- list('dt' = dt, 'input.timeseries' = input.timeseries,
+                          'warmup.initial'=warmup.initial,'warmup.final'=warmup.final,
+                          'calibration.initial'=calibration.initial,'calibration.final'=calibration.final)
+
+saveRDS(dynatop.hydro.met,'HydroInputData/dynatop_hydromet_LM.RData')
+
 ```
 
 
 
 
 
+```{r}
+
+```
 

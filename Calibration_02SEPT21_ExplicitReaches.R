@@ -275,7 +275,7 @@ plot_results(do.png=FALSE,                                      # plots do not g
 # NOTE: the code was having trouble reading in the obs file produced by hydroPSO. I just had to delete the title column from the text file and it worked properly.
 # Read the results of the calibration and process the results into quantiles 
 # NOTE: the code was having trouble reading in the obs file produced by hydroPSO. I just had to delete the title column from the text file and it worked properly.
-PSO.drty <- paste0(model.drty, "/PSO.out/")                     # Specify the directory where all of the PSO files are written to
+PSO.drty <- paste0("/PSO.out/")                                 # Specify the directory where all of the PSO files are written to
 res <- read_results(drty.out=PSO.drty, MinMax="max",            # Read the results of the calibration; MAX is noting that we are looking for maximum KGE vals
                     beh.thr=0.3,modelout.cols=NULL)             # 0.3 is the threshold for specifying behavioral model realizations
 params <- res[["params"]]                                       # Record the optimal parameters from the results
@@ -303,14 +303,14 @@ obs.zoo.new <- zoo(model.obs,dates.cal)                         # Create new zoo
 
 # Calculate statistics of model run
 pbias(sim=result.optim,obs=obs.zoo.new)                                            # Calculate pbias of sim and obs
-gof.logKGE <- KGE(sim=as.numeric(log(result.optim+1e-07)),                         # Calculate log KGE
-                  obs=as.numeric(log(model.obs+1e-07)), method="2012")             # Continued
-gof.logNSE <- dynatopmodel::NSE(qsim=as.numeric(log(result.optim+1e-07)),          # Calculate log NSE
-                                qobs=as.numeric(log(model.obs+1e-07)))                           # Continued
-gof.KGE <- KGE(sim=as.numeric(result.optim+1e-07),obs=as.numeric(model.obs+1e-07), # Calculate KGE
+gof.logKGE <- KGE(sim=as.numeric(log(result.optim+1e-10)),                         # Calculate log KGE
+                  obs=as.numeric(log(model.obs+1e-10)), method="2012")             # Continued
+gof.logNSE <- dynatopmodel::NSE(qsim=as.numeric(log(result.optim+1e-10)),          # Calculate log NSE
+                                qobs=as.numeric(log(model.obs+1e-10)))                           # Continued
+gof.KGE <- KGE(sim=as.numeric(result.optim+1e-10),obs=as.numeric(model.obs+1e-10), # Calculate KGE
                method='2012')                                                      # Continued 
-gof.NSE <- dynatopmodel::NSE(qsim=as.numeric(result.optim+1e-07),                  # Calculate NSE 
-                             qobs=as.numeric(model.obs+1e-07))                                   # Continued 
+gof.NSE <- dynatopmodel::NSE(qsim=as.numeric(result.optim+1e-10),                  # Calculate NSE 
+                             qobs=as.numeric(model.obs+1e-10))                                   # Continued 
 gof.metrics <- data.frame(logKGE=gof.logKGE,KGE=gof.KGE,                           # Record all of the test stats
                           logNSE=gof.logNSE,NSE=gof.NSE)                           # Continued 
 gof.metrics                                                                        # print stats
@@ -348,7 +348,7 @@ precip.out <- window(rain.calib,                                # Window precip 
 obs.out <- window(Q.obs.calib,                                  # Window obs for writing model
                   start=dates.df$calibration.initial,           # Start
                   end=dates.df$calibration.final)               # End
-optim.out <- window(result.optim.run$sim,                       # Window optim result for writing model
+optim.out <- window(result.optim.run$run$qsim,                       # Window optim result for writing model
                     start=dates.df$calibration.initial,         # Start
                     end=dates.df$calibration.final)             # End
 precip.out <- precip.out[1:12502]                               # Ensure length is 12502 - NOTE THIS IS BAD PRACTICE AND WILL NEED TO CHANGE IF dt CHANGES
@@ -1625,14 +1625,14 @@ explicit.routing.instant <- function(FR.Spatial,run,model.timestep) {
     
     in.qbf <- as.numeric(in.qbf.init[iter,])
     
-    #evap[iter,'ae'] <- in.ae[2]
+    
     pex <- in.rain-in.ae
     pex[pex<0] <- 0
     
     flows.explicit.qbf <- rep(0,nrow(explicit.weights.full))  
                             
     
-    flows.explicit.qbf[34:length(flows.explicit.qbf)] <- in.qbf[3:length(in.qbf)] 
+    flows.explicit.qbf[(num.reach+1):length(flows.explicit.qbf)] <- in.qbf[2:length(in.qbf)] 
     
     explicit.chan.inputs.qbf[iter,] <- as.vector((flows.explicit.qbf*explicit.groups$area) %*% explicit.weights.full)
     explicit.chan.inputs.qbf[iter,] <- explicit.chan.inputs.qbf[iter,] +
