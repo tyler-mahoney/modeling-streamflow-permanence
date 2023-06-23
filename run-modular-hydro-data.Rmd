@@ -5,7 +5,7 @@ output: html_notebook
 
 # Introduction
 
-The objective of this notebook is to generate a list or dataframe that contains all hydrometeorological data used in dynamic TOPMODEL. This notebook is meant to replace the workflow for the *Forcing.input* function for the modified dynamic TOPMODEL described by Mahoney et al. (2022) *J. Hydrol*.
+The objective of this notebook is to generate a list or dataframe that contains all hydrometeorological data used in dynamic TOPMODEL. This notebook is meant to replace the workflow for the *Forcing.input* function for the modified dynamic TOPMODEL described by Mahoney et al. (2023) *J. Hydrol*.
 
 # Step 1: Load in Libraries
 

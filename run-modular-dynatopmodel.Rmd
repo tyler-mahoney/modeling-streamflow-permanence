@@ -1,0 +1,588 @@
+---
+title: "Run Modular Dynatopmodel"
+output: html_notebook
+---
+
+# Step 1: Read in required libraries
+
+```{r}
+library(dynatopmodel)
+library(sp)
+library(raster)
+library(reticulate)
+library(topmodel)
+library(ggplot2)
+library(mapview)
+library(hydroPSO)                                               # Read in hydroPSO algorithm
+library(hydroGOF)                                               # Read in hydroGOF package (goodness of fit)
+library(hydroTSM)                                               # Read in hydroTSM package
+library(boot)                                                   # Read in boot package
+library(zoo)                                                    # Read in zoo package for time series analysis 
+library(sensitivity)                                            # Read in the sensitivity analysis package
+library(xts)                                                    # Read in the xts package also for time series 
+library(ggplot2)                                                # Read in ggplot2 package for figure 
+library(dplyr)                                                  # Read in dplyr package
+library(readr)                                                  # Read in read r package
+library(lubridate)                                              # Read in lubridate for date manipulation
+library(Evapotranspiration)                                     # Read in the Evapotranspiration packahge 
+library(rasterVis)                                              # Read in the rasterVis package for raster 
+library(dismo)                                                  # Read in dismo package for k fold cross
+library(rgl)                                                    # Read in the rgl package for 3D scatter plots
+library(matrixStats)                                            # Read in the library for matrixStats
+library(gridExtra)                                              # Read in the gridExtra package for GGPLOT2
+library(tidyquant)
+
+```
+
+# Step 2: Load in Spatial Data 
+Note, this should be saved from the 'run-modular-discretization.Rmd' Notebook 
+
+```{r}
+# Read in the Spatial data 
+read.spatial <- readRDS('SpatialInputData/dynatop_spatial_LM.RData')
+read.spatial.FR <- readRDS('SpatialInputData/dynatop_spatial_FR.RData')
+disc <- read.spatial$disc                                      
+RoutingTable <- read.spatial$RoutingTable                      
+explicit.reach.table <- read.spatial$explicit.ChanTable         
+
+```
+
+# Step 3: Read in the hydrometeorological data 
+Note, this should be saved from the 'run-modular-hydro-data.Rmd' Notebook. 
+Reminder: if any functions are used to develop the time series that are created within, they must be loaded prior to running the chunk. 
+
+```{r}
+# Read in the hydromet data
+read.hydromet <- readRDS('HydroInputData/dynatop_hydromet_LM.RData')
+
+input.timeseries <- read.hydromet$input.timeseries
+
+# Specify the Model Time Step (and internal time step)
+model.timestep <- read.hydromet$dt        #1  #2                                 # This should match the dt specified from run-modular-hydro-data
+in.timestep <- read.hydromet$dt           #1  #2                                 # Specify the number of internal time steps (unitless) - this is for the internal loop to calculate the baseflow
+
+# Specify Calibration Period
+warmup.initial <- read.hydromet$warmup.initial
+warmup.final <- read.hydromet$warmup.final
+
+calibration.initial <- read.hydromet$calibration.initial
+calibration.final <- read.hydromet$calibration.final
+
+# Note: it's important to format the timeseries in terms of UTC otherwise timesteps will be added (annoyingly)
+
+# Concatinate the dates
+dates.df <- data.frame(calibration.initial, calibration.final,  # Concatinate the dates into a df 
+                       warmup.initial, warmup.final)            # Continued
+names.dates <- c('calibration.initial','calibration.final',     # Create names for the df
+                 'warmup.initial','warmup.final')               # Continued
+names(dates.df) <- names.dates                                  # Specify the date names 
+
+# Specify the watershed area
+watershed.area <- sum(disc$groups$area)                         # Specify the watershed area (m^2)
+
+# Load in the data from the input timeseries from the run-modular-hydro-data file
+# Currently no validation period is specified 
+
+rain.calib <- input.timeseries$P[1:(length(input.timeseries$P))]                     # Writing the P TS to a variable
+PET.calib <- input.timeseries$PET[1:(length(input.timeseries$PET))]                  # Writing the PET TS to a variable
+Q.obs.calib <- input.timeseries$Qobs[1:(length(input.timeseries$Qobs))]              # Writing the Qobs TS to a variable
+dates.cal.warm <- time(rain.calib)  
+```
+
+# Step 4: Set up the parameter values and load in the functions to run the model
+```{r}
+
+source('run-modular-dynatopmodel-functions.R')
+
+# Set up the model parameters; Read in min and max values (these values should be based on the literature).
+v.of.min <- 10; v.of.max <- 150                                 # Overland flow velocity (m/hr) min and max
+m.min <- -9.908; m.max <- -2.813                                # Form of exponential decline in conductivity (m) min and max
+srz.max.min <-  .01; srz.max.max <- .75                         # Max root zone storage (m) min and max
+srz.0.min <- 0.5; srz.0.max <- 1                                # Initial root zone storage (fraction) min and max
+v.chan.min <- 500; v.chan.max <- 7000                           # Channel routing velocity (m/hr) min and max
+natlog.T0.min <- 3; natlog.T0.max <- 16                         # Lat saturated transmissivity (m^2/hr) min and max
+sd.max.min <- 0.2; sd.max.max <- 0.8                            # Max effective deficit of sat zone (m) min and max
+td.min <- 0.01; td.max <- 100                                   # Unsat zone time delay (hr/m) min and max
+mann.n.min <- 0.01; mann.n.max <- .15                           # Manning's (unitless) n min and max
+S0.min <- 0.01; S0.max <- 0.3                                   # Nominal slope (fraction) min and max
+CD.min <-  0.01; CD.max <- 0.5                                  # Capilary drive (unused) min and max
+k0.min <-  0.1; k0.max <- 1000                                  # Initial saturated hydraulic conductivity (m/hr; unused) min and max
+m1.min <- -9.908; m1.max <- -2.813                              # Assign range for the first m     
+m2.min <- -9.908; m2.max <- -2.813                              # Assign range for the second m
+m3.min <- -9.908; m3.max <- -2.813                              # Assign range for the third m 
+
+# Concatinate parameter minmum, maximum, and names. Assign names to vectors
+lower <- c(v.of.min, m.min, srz.max.min, srz.0.min, v.chan.min, # Vector of lower parametr values
+           natlog.T0.min, sd.max.min, td.min,                   # Will be used to generate parameter sets 
+           mann.n.min, S0.min, CD.min, k0.min,                  # Continued
+           m1.min, m2.min, m3.min)                              # During calibration
+
+upper <- c(v.of.max, m.max, srz.max.max, srz.0.max, v.chan.max, # Vector of upper parameter values
+           natlog.T0.max, sd.max.max, td.max,                   # Will be used to generate parmeter sets 
+           mann.n.max, S0.max, CD.max, k0.max,                  # Continued 
+           m1.max, m2.max, m3.max)                              # During Calibration 
+
+name.params <- c('v.of', 'm','srz.max','srz.0',                 # Create names of all parameters
+                 'v.chan','natlog.T0','sd.max',                 # Included in Dynatopmodel
+                 'td','mann.n','S0','CD','k0',                  # Continued
+                 'm1','m2','m3')                                # To be implemented within the uncertainty and calibration
+names(lower) <- name.params                                     # Specify names of columns for the lower part of the parameter space
+names(upper) <- name.params                                     # Specify names of columns for the upper part of the parameter space
+
+params <- lower+(upper-lower)/2                                 # Unused - but for a test run of the model
+
+params.best.FC4 <- c(0.978,-6.75, 0.679,0.981,500,5.76,.606,1.58,0.0376,.181,.136,.0693,-9.91,-3.22,-2.81)
+
+```
+
+# Step 5: Run the model with random values and the optimal parameterziation from the previous model
+
+Note: I'm not expecting for the calibration statistics for either model to be particularly good initially since this is a different spatial parameterization... but we'll see. 
+
+```{r}
+
+
+# Run a test of the model to make sure that things look good before running the PSO calibration 
+result.test <- runPSOCalibrationTopmodel(param.values=params,                      # TEST - Run the model with the optimal parameter set
+                                         inner.timesteps = in.timestep,            # input the inner.timesteps
+                                         rains = rain.calib, PETs=PET.calib,       # All forcing components are the same
+                                         obss=Q.obs.calib, discs=disc,          # Spatial information comes from the dynatop spatial function
+                                         RoutingTables=NULL,                       # See above
+                                         dates.dfs = dates.df)                     # Calibration end date input
+result.test.FC4 <- runPSOCalibrationTopmodel(param.values=params.best.FC4,                      # TEST - Run the model with the optimal parameter set
+                                             inner.timesteps = in.timestep,            # input the inner.timesteps
+                                             rains = rain.calib, PETs=PET.calib,       # All forcing components are the same
+                                             obss=Q.obs.calib, discs=disc,          # Spatial information comes from the dynatop spatial function
+                                             RoutingTables=NULL,                       # See above
+                                             dates.dfs = dates.df)                     # Calibration end date input
+
+out.test <- data.frame(sim=result.test.FC4$sim,obs=result.test.FC4$run$qobs)
+#write.csv(out.test,'out-test-LM.csv')
+```
+
+# Step 6: Calibrate the model for discharge at the outlet of the watershed
+```{r}
+source('run-modular-dynatopmodel-functions.R')
+
+# Define the directory where the data will be saved to. 
+model.drty <- 'D:/Data/Dynamic-TOPMODEL/Little-Millseat/Calibration-1'
+
+# Create a file for the figures to be pasted if it is needed.
+Figures.drty.out <- paste0(model.drty, "/Figures")                                 # Create directroy to store the figures for the calibration
+if (!file.exists(Figures.drty.out)) dir.create(Figures.drty.out,                   # Creates a figure directory
+                                               recursive=TRUE)                     # If the output directory selected to store the figures does not exists, it is created:
+
+# Parameterize the routing table for the model
+RoutingTables <- NULL                                                              # Note: as of now since FR is so small, I am assuming that the routing table is null, meaning that there is no attenuation really. This assumption is okay for now given the small size of the catchment.
+RoutingTable <- NULL                                                               # Note: as of now since FR is so small, I am assuming that the routing table is null, meaning that there is no attenuation really. This assumption is okay for now given the small size of the catchment.
+
+# Run the PSO calibration procedure: Note we were having issues running the model with the model.FUN.args as the method to read the arguments. 
+# NOTE: Now we run the hydroPSO algorithm with the model arguments as 'global' variables.
+out <- hydroPSO(fn="hydromodInR",                               # This is an optional, but necessary specification that the calibration approach is a 'hydromod' with a model as an outside function
+                lower=lower,                                    # Input the lower parameter range
+                upper=upper,                                    # Input the upper parameter range
+                method="spso2011",                              # Specify the algorithm to calibrate the model
+                control=list(write2disk=TRUE, MinMax="max",     # These are the parameters for the HydroPSO calibration approach
+                             npart=10, maxit=8, normalise=TRUE, # See the documentation for each of these items # Before i had at npart = 80 and maxit =25; the typical runs were 50 npart * 5 iter # before 12/1/2022 npart = 55, maxit = 9, report =9. I needed to cut this down for time. 
+                             REPORT=8, parallel="none",        # The model can either be run a certain number of iterations or it can reach a cut off threshold
+                             reltol=1E-10),                     # There are also coefficients for how widely the search space is and another coefficient to control how quickly convergence occurs (Not shown, these are currently defaults)
+                model.FUN="Dynatophydromod",                    # This is the function that calls dynatop
+                model.FUN.args= list(obs = Q.obs.calib,                            # Timeseries of observed Q data to compare the simulated results #inner.timestep=in.timestep,            # Number of inner timesteps
+                                     inner.timestep = in.timestep,                 # Inner timestep
+                                     rain = rain.calib,                            # Timeseries of precipitation at dt to run the model 
+                                     PET = PET.calib,                              # Timeseries of PET at dt needed to run the model 
+                                     disc = disc,                               # Spatial discretization (weighting matrix) and 'groups' parameter matrix 
+                                     RoutingTable = NULL,                          # Routing table to discretize stream network
+                                     date = dates.cal.warm,                        # Vector of dates for the calibration period
+                                     dates.df = dates.df,                          # Date frame of dates used for warm up and calibration periods
+                                     model.drty=model.drty),                       # Input the model directory                              
+                obs = Q.obs.calib,                              # Note above we're the model.FUN.args wasn't working properly, so we're adding this back in as variables that will feed into the model
+                inner.timestep = in.timestep,                   # Inner timestep   
+                rain = rain.calib,                              # Timeseries of precipitation at dt to run the model 
+                PET = PET.calib,                                # Timeseries of PET at dt needed to run the model
+                disc = disc,                                 # Spatial discretization (weighting matrix) and 'groups' parameter matrix 
+                RoutingTable = NULL,                            # Routing table to discretize stream network
+                date = dates.cal.warm,                          # Array of dates for each time step
+                dates.df = dates.df,                            # Date frame of dates used for warm up and calibration periods
+                model.drty = model.drty,                        # Model directory    
+                # Date frame of dates used for warm up and calibration periods       
+)
+
+saveRDS(out,'D:/Data/Dynamic-TOPMODEL/Little-Millseat/Calibration-1/dynatop_calib_LM.RData')
+```
+# Step 7: Route the water thruough the stream network. 
+
+```{r}
+
+kinematicWave <- function(lateral.inflow,inflow.reach.i,width,channel.length,slope,manning.n,timestep) {
+  
+  ## Explanation of arguments
+  # lateral.inflow = vector of lateral inflow to reach j during timestep i (m^3/hr)
+  # inflow.reach.i = vector of inflow from the previous reach (m^3/hr)
+  # width = width of the reach (m)
+  # length = legnth of the reach (m)
+  # slope = slope of the channel (m/m)
+  # manning.n = manning n of the channel (unitless) 
+  # timestep = timestep of the channel (s)
+  
+  # calculate the alpha and beta components from Manning's equation 
+  alpha.kinematic <- (manning.n*width^(2/3)/(1.49*(slope)^0.5)) ^ (3/5)
+  beta.kinematic <- 0.6
+  
+  # Convert the lateral inflow (m^3/s) to flow per unit width 
+  lateral.inflow <- lateral.inflow/channel.length
+  
+  # Convert the flow from m^3/hr to m^3/s
+  inflow.reach.i <- inflow.reach.i/60/60
+  lateral.inflow <- lateral.inflow/60/60
+  
+  # Initilize the outflow matrix
+  Q.outflow <- matrix(nrow=length(inflow.reach.i),ncol=1)
+  # Implment the numerical method 
+  for (i in 1:length(inflow.reach.i)) {
+    if (i==1) {
+      Q.outflow[i] = inflow.reach.i[i]
+    } else {
+      Q.inflow.numerator <- timestep/channel.length*inflow.reach.i[i]+alpha.kinematic*beta.kinematic*((Q.outflow[i-1]+inflow.reach.i[i])/2)^(beta.kinematic-1)*Q.outflow[i-1]
+      Q.lateral.numerator <- timestep*(lateral.inflow[i]+lateral.inflow[i-1])/2
+      Q.inflow.denominator <- timestep/channel.length+alpha.kinematic*beta.kinematic*((Q.outflow[i-1]+inflow.reach.i[i])/2)^(beta.kinematic-1)
+      
+      Q.outflow[i] <- (Q.inflow.numerator+Q.lateral.numerator)/Q.inflow.denominator
+    }
+  }
+  
+  # Convert back to m^3/hr
+  Q.outflow <- Q.outflow*60*60 
+  return(Q.outflow)
+}
+
+
+### Post processing and routing of Q after calibration...
+
+explicit.routing.instant <- function(read.spatial,explicit.reach.table,run,model.timestep) {
+  
+  ############# READ IN REACH INPUTS AND CLEAN MATRICES #################
+  num.reach <- nrow(explicit.reach.table)
+  explicit.disc <- read.spatial$explicit.disc                          # Read in the explicit disc
+  explicit.weights.full <- read.spatial$explicit.disc$weights
+  explicit.groups <- explicit.disc$groups
+  groups <- read.spatial$disc$groups
+  
+  
+  # Initialize input matrices
+  lumped.chan.inputs <- matrix(0,ncol= ncol(run$fluxes$qbf), 
+                               nrow=nrow(run$fluxes$qbf))
+  lumped.chan.overland <- matrix(0,ncol= ncol(run$fluxes$qbf), 
+                                 nrow=nrow(run$fluxes$qbf))
+  lumped.qin <- run$fluxes$qin
+  explicit.chan.inputs <- matrix(0,ncol=length(explicit.groups$area),
+                                 nrow=nrow(run$fluxes$qbf))
+  explicit.chan.inputs.sa <- matrix(0,ncol=length(explicit.groups$area),
+                                    nrow=nrow(run$fluxes$qbf))
+  explicit.chan.inputs.qbf <- matrix(0,ncol=length(explicit.groups$area),
+                                     nrow=nrow(run$fluxes$qbf))
+  explicit.chan.inputs.qbf.sa <- matrix(0,ncol=length(explicit.groups$area),
+                                        nrow=nrow(run$fluxes$qbf))
+  
+  evap <- data.frame(matrix(0,ncol=1,nrow=nrow(run$fluxes$ae)))
+  names(evap) <- 'ae'
+  a.chan.explicit <- explicit.groups$area
+  a.chan <- groups$area
+  catch.area <- sum(a.chan)
+  Q_out <- matrix(0,ncol=1,nrow=nrow(run$fluxes$qin))
+  AE_out <- matrix(0,ncol=1,nrow=nrow(run$fluxes$qin))
+  total_in <- matrix(0,ncol=1,nrow=nrow(run$fluxes$qin))
+  total_out <- matrix(0,ncol=1,nrow=nrow(run$fluxes$qin))
+  sd.gain <- matrix(0,ncol=1,nrow=nrow(run$fluxes$qin))
+  in.rain.init <- as.vector(run$fluxes$rain[,1]) 
+  in.ae.init <- as.vector(run$fluxes$ae[,1])    # NOTE ASSUMES THAT WE ARE USING A SINGULAR AE AND P FOR THE ENTIRE CATCHMENT 
+  in.qbf.init <- data.frame(run$fluxes$qbf)
+  
+  for (iter in 1:nrow(run$fluxes$qbf)) {
+    in.rain <- in.rain.init[iter]                               # Rain inputs
+    in.ae <- in.ae.init[iter]                                   # Actual Evapotranspiration inputs
+    
+    in.qbf <- as.numeric(in.qbf.init[iter,])
+    
+    #evap[iter,'ae'] <- in.ae[2]
+    pex <- in.rain-in.ae
+    pex[pex<0] <- 0
+    
+    flows.explicit.qbf <- rep(0,nrow(explicit.weights.full))  
+                            
+    
+    flows.explicit.qbf[(num.reach+1):length(flows.explicit.qbf)] <- in.qbf[2:length(in.qbf)] 
+    
+    explicit.chan.inputs.qbf[iter,] <- as.vector((flows.explicit.qbf*explicit.groups$area) %*% explicit.weights.full)
+    explicit.chan.inputs.qbf[iter,] <- explicit.chan.inputs.qbf[iter,] +
+      (pex[1])*a.chan.explicit
+    
+    correction <- as.numeric(run$Qsim[iter])/sum(explicit.chan.inputs.qbf[iter,1:num.reach])
+    
+    explicit.chan.inputs.qbf[iter,] <- explicit.chan.inputs.qbf[iter,]*correction
+    
+    
+  }
+  
+  # Check the water balance
+#  perc.diff.Qsim.explicit <- as.vector((run$Qsim-rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:num.reach]))/run$Qsim*100)
+    
+#    check.balances <- data.frame(explicit=rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:num.reach]),
+#                                 Qsim=run$Qsim,
+#                                 diff.explicit.Qsim = rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:num.reach]) -
+#                                   run$Qsim,
+#                                 qin=lumped.qin[1:length(run$Qsim),1],
+#                                 diff.qin.Qsim = lumped.qin[1:length(run$Qsim),1]-
+#                                   run$Qsim,
+#                                 perc.diff.Qsim.explicit=perc.diff.Qsim.explicit)
+  
+  
+  ############# ROUTE WATER FROM REACHES ############
+  
+  ####### Routing with no dispersion/lag #######
+  reach.name <- paste0('R',explicit.reach.table$link_no)                      # Write the reach names/link numbers
+  explicit.chan.inputs <- data.frame(explicit.chan.inputs.qbf)
+  reach.name <- c(reach.name,paste0('HRU',groups$id[2:length(groups$id)]))      # Need to check if there are duplicate names
+  duplicate.reaches.hru <- sum(duplicated(reach.name))
+  # if duplcicated.reaches.hru > 0, then output a warning
+  if (duplicate.reaches.hru > 0) {warning('reach names are duplicated. this will likely cause errors.')}
+  
+  names(explicit.chan.inputs) <- reach.name                       # Assign reach names to columns in the inflow matrix
+  explicit.chan.inputs <- explicit.chan.inputs[,1:num.reach]
+  
+  routed.flow.instant <- data.frame(matrix(nrow=nrow(explicit.chan.inputs),  # Initialize a dataframe of the same size of the channel inputs
+                                           ncol=ncol(explicit.chan.inputs))) # Continued - for instant routed 
+  names(routed.flow.instant) <- names(explicit.chan.inputs)                   # Assigne reach names to columsn in the isntant routed  flow
+  reach.name <- reach.name[1:num.reach]
+  
+  routed.flow.kinematic <- data.frame(matrix(nrow=nrow(explicit.chan.inputs),  # Initialize a dataframe of the same size of the channel inputs
+                                             ncol=ncol(explicit.chan.inputs))) # Continued - for instant routed 
+  names(routed.flow.kinematic) <- names(explicit.chan.inputs)      
+  
+  # FIRST ORDER REACHES - calculate for the first order reaches first
+  for (reach.1 in reach.name[explicit.reach.table[,5]==1]) {      # For each of the reaches where in the explicit reach table the stream order is 1
+    reach.char.1 <- as.character(reach.1)                         # Write the reach as a character (for referenceing purposes)
+    routed.flow.instant[,reach.char.1] <-                         # Write to the routed.flow.instant data frame with the reach character as the column name
+      explicit.chan.inputs[,as.character(reach.1)]                # Since it's a first order reach, the flow is just from the inputs
+    routed.flow.kinematic[,reach.char.1] <- explicit.chan.inputs[,as.character(reach.1)]
+  }
+  
+  # SECOND ORDER REACHES - calculate for the second order reaches
+  second.order <- rev(reach.name[explicit.reach.table[,5]==2])    # Reverse the order because the lower 2nd order reaches might contain other 2nd order reaches
+  for (reach.2 in second.order) {                                 # For each of the reaches where in the explicit reach table the stream order is 2 
+    reach.char.2 <- as.character(reach.2)                         # Write the reach as a character for referencing
+    routed.flow.instant[,reach.char.2] <-                         # Write to the routed.flow.instant data frame with reach
+      explicit.chan.inputs[,as.character(reach.2)] +                                                             # Inflow from the uplands
+      routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.2])] + # Inflow from the first reach
+      routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.2])]   # Inflow from the second reach
+    
+    routed.flow.kinematic[,reach.char.2] <- kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.2)],
+                                                          inflow.reach.i=routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.2])] + # Inflow from the first reach
+                                                            routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.2])],
+                                                          width=explicit.reach.table$width_m2[explicit.reach.table$link_no==reach.2],
+                                                          channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==reach.2]*0.3048,
+                                                          slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==reach.2],
+                                                          manning.n=FR.Spatial$disc$groups$mann.n[1],
+                                                          timestep=model.timestep*60*60)
+    
+  }
+  
+  #THIRD ORDER REACHES
+  third.order <- rev(reach.name[explicit.reach.table[,5]==3])     # Reverse the order because the lower 3rd order reaches might contain other 3rd order reaches
+  for (reach.3 in third.order) {                                  # For each of the reaches where in the explicit reach table the stream order is 3 
+    reach.char.3 <- as.character(reach.3)                         # Write the reach as a character for referencing
+    routed.flow.instant[,reach.char.3] <-                         # Write to the routed.flow.instant data frame with reach
+      explicit.chan.inputs[,as.character(reach.3)] +                                                              # Inflow from the uplands
+      routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.3])] + # Inflow from the first reach
+      routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.3])]   # Inflow from the second reach
+    
+    routed.flow.kinematic[,reach.char.3] <- kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.3)],
+                                                          inflow.reach.i=routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.3])] + # Inflow from the first reach
+                                                            routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.3])],
+                                                          width=explicit.reach.table$width_m2[explicit.reach.table$link_no==reach.3],
+                                                          channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==reach.3]*0.3048,
+                                                          slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==reach.3],
+                                                          manning.n=FR.Spatial$disc$groups$mann.n[1],
+                                                          timestep=model.timestep*60*60)
+  }
+  
+  #FOURTH ORDER REACHES
+  fourth.order <- rev(reach.name[explicit.reach.table[,5]==4])    # Reverse the order because the lower 4th order reaches might contain other 4th order reaches
+  for (reach.4 in fourth.order) {                                 # For each of the reaches where in the explicit reach table the stream order is 4
+    reach.char.4 <- as.character(reach.4)                         # Write the reach as a character for referencing
+    routed.flow.instant[,reach.char.4] <-                         # Write to the routed.flow.instant data frame with reach
+      explicit.chan.inputs[,as.character(reach.4)] +                                                             # Inflow from the uplands
+      routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.4])] + # Inflow from the first reach
+      routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.4])]   # Inflow from the second reach
+    
+    routed.flow.kinematic[,reach.char.4] <- kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.4)],
+                                                          inflow.reach.i=routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.4])] + # Inflow from the first reach
+                                                            routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.4])],
+                                                          width=explicit.reach.table$width_m2[explicit.reach.table$link_no==reach.4],
+                                                          channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==reach.4]*0.3048,
+                                                          slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==reach.4],
+                                                          manning.n=FR.Spatial$disc$groups$mann.n[1],
+                                                          timestep=model.timestep*60*60)
+  }
+  
+  if (length(run$Qsim)==12502) {
+    Qout.lumped=as.vector(run$Qsim)/(3600)
+    Qout.explicit.routed=routed.flow.instant[1:length(run$Qsim),1]/(3600)
+  } else {
+    Qout.lumped=as.vector(run$Qsim[1:nrow(run$fluxes$qbf)])/(3600)
+    Qout.explicit.routed=routed.flow.instant[,1]/(3600)
+  }
+  
+  
+  if (length(run$Qsim) ==12502) {
+    percent.diff=((run$Qsim-routed.flow.instant[1:length(run$Qsim),1])/run$Qsim)*100
+    check.balances.new <- data.frame(Qout=run$Qsim,
+                                     routed.flow.instant=routed.flow.instant[1:length(run$Qsim),1],
+                                     percent.diff=percent.diff)
+  } else {
+    percent.diff=((run$Qsim[1:nrow(run$fluxes$qbf)]-routed.flow.instant[,1])/run$Qsim[1:nrow(run$fluxes$qbf)])*100
+    check.balances.new <- data.frame(Qout=run$Qsim[1:nrow(run$fluxes$qbf)],
+                                     routed.flow.instant=routed.flow.instant[,1],
+                                     percent.diff=percent.diff)
+  }
+  
+  check.balances.newest <- list(check.balances=check.balances.new,min.perc.diff=min(percent.diff),max.perc.diff=max(percent.diff),avg.perc.diff=mean(percent.diff))
+  
+  # Current units of routed.flow.instant are m^3/hr... convert to mm/s
+  routed.flow.instant.mm_s <- sweep(routed.flow.instant,2,explicit.reach.table$US_area_m2,FUN='/')/3600*1000
+  
+  routing.out <- list(check.balances.new=check.balances.newest, routed.flow.instant.m3_hr=routed.flow.instant,
+                      routed.flow.instant.mm_s=routed.flow.instant.mm_s,
+                      routed.flow.kinematic.m3_hr=routed.flow.kinematic)
+  
+  
+  #View(check.balances)
+  #View(check.balances.new)
+  #max(check.balances.new$percent.diff)
+  # min(check.balances.new$percent.diff)
+  return(routing.out)
+  
+  
+}
+```
+
+
+# Step 6: plot the data 
+
+```{r}
+# Read the optimal parameter values and rerun the model                                
+read.out.calib <- readRDS('D:/Data/Dynamic-TOPMODEL/Little-Millseat/Calibration-1/dynatop_calib_LM.RData')
+
+optim.params <- read.out.calib$par                                                            # Read the optimal parameter set
+names(optim.params) <- names(params)                                               # Set names 
+result.optim <- runPSOCalibrationTopmodel(param.values=optim.params,               # Run the model with the optimal parameter set
+                                          inner.timesteps = in.timestep,           # input the inner.timesteps
+                                          rains = rain.calib, PETs=PET.calib,      # All forcing components are the same
+                                          obss=Q.obs.calib, discs=disc,            # Spatial information comes from dynatop spatial function
+                                          RoutingTables=NULL,                      # See above
+                                          dates.dfs = dates.df)                    # Calibration end date input
+sim.zoo <- (window(result.optim$run$qsim, start = dates.df$calibration.initial,         # window the simulation
+                         end = dates.df$calibration.final))                        # Will convert to zoo obj later
+obs.zoo <- (window(result.optim$run$qobs, start = dates.df$calibration.initial,              # Window the observed
+                  end = dates.df$calibration.final))                               # Will convert to zoo obj later
+
+
+
+sim.zoo <- zoo(sim.zoo)                                         # Convert to zoo object
+obs.zoo <- zoo(obs.zoo)                                         # Convert to zoo object
+
+plot(sim.zoo)
+lines(obs.zoo,col='red')
+
+
+PSO.drty <- "/PSO.out/"                             # Specify the directory where all of the PSO files are written to
+res <- read_results( MinMax="max",            # Read the results of the calibration; MAX is noting that we are looking for maximum KGE vals
+                    beh.thr=0.3,modelout.cols=NULL)             # 0.3 is the threshold for specifying behavioral model realizations
+params <- res[["params"]]                                       # Record the optimal parameters from the results
+gofs <- res[["gofs"]]                                           # Read the goodness of fit values
+Qsims <- res[["model.values"]]                                  # Model values for the simulations
+model.best <- res[["model.best"]]                               # Read the best model results
+model.obs <- res[["model.obs"]]                                 # Outputthe observed results 
+optim.params <- data.frame(t(res$best.param))                   # Transpose the data and write as dataframe to be read in by the model                                                                   # print stats
+
+## Process Quantiles of the model results 
+params.025.50.975 <- wquantile(params, weights=gofs,            # Determine the weighted quantiles based on the gofs
+                               byrow=FALSE,                     # Specifying wquanitle inputs
+                               probs=c(0.025, 0.5, 0.975),      # probabilities to be calculated
+                               normwt=TRUE, verbose=FALSE)      # Other inputs
+params.025.50.best.975 <- cbind(params.025.50.975[, c(1,2)],    # Cbind to determine how far past the median
+                                Best=as.numeric(optim.params[[1]]),                # This is realated to the beset parameters
+                                params.025.50.975[, 3] )        # Which column is needed 
+colnames(params.025.50.best.975)[4] <- "97.5%"                  # Column names
+round( params.025.50.best.975, 2)                               # Rounding the parameters - for viewing
+n <- ncol(Qsims)                                                # number of time steps
+Qsim.025.q50.q975 <- wquantile(Qsims, weights=gofs, byrow=FALSE,# This is based on the Qsims this time 
+                               probs=c(0.025, 0.5, 0.975),      # This is the quantiles that will be calculated
+                               normwt=TRUE, verbose=FALSE)      # It's normalized
+#round( head(Qsim.025.q50.q975), 3)                              # Prints the quantiles Qsim
+q025 <- zoo(Qsim.025.q50.q975[,1], dates.cal)                   # Transform the 2.5 quantiles to zoo
+q975 <- zoo(Qsim.025.q50.q975[,3], dates.cal)                   # Transform the 97.5 quantile to zoo
+
+pf <- pfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the P factor
+pf                                                              # Print the P factor
+rf <- rfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the R factor
+rf                                                              # Print the R factor 
+
+# Convert from m/hr (the output of dynatopmmodel) to mm/day: 1 m / 1 hr * 1000 mm / 1 m * 24 hr / 1 day
+sim.plot <- sim.zoo*24000
+colnames(sim.plot) <- 'sim'
+obs.plot <- obs.zoo*24000
+colnames(obs.plot) <- 'obs'
+lower.plot <- q025*24000
+upper.plot <- q975*24000
+
+obs.minus.sim.plot <- obs.plot-sim.plot
+colnames(obs.minus.sim.plot) <- 'obs.minus.sim.plot'
+outlet.sim.obs <- data.frame(time=as.Date(time(obs.zoo),format='%y-%d-%m %hh:%mm:%ss'),'sim'=sim.plot,'obs'=obs.plot,
+                             'lower'=lower.plot,'upper'=upper.plot,'obs.minus.sim'=obs.minus.sim.plot) # This code converts everything from m/hr to mm/day
+
+sim.obs.outlet.plot <- ggplot(data=outlet.sim.obs,aes(x=time,y=sim))+geom_ribbon(data=outlet.sim.obs,aes(ymin=lower,ymax=upper),fill='grey70')+geom_line(data=outlet.sim.obs,aes(x=time,y=obs),color='red',linetype='solid') +theme(legend.position = "none")
+sim.obs.outlet.plot <- sim.obs.outlet.plot+geom_line(color='black',size=.55)+ theme_bw() + xlab('Date') +
+  scale_x_date(date_breaks = '6 months')+ylab('Discharge (mm/d)*')+ylim(0,20.0)
+sim.obs.outlet.plot <-  sim.obs.outlet.plot + theme(axis.title.x=element_blank())
+sim.obs.outlet.plot
+
+sim.obs.window <- outlet.sim.obs[which(rownames(outlet.sim.obs)=="2004-09-01 00:00:00"):which(rownames(outlet.sim.obs)=="2004-11-01 00:00:00"),]   
+
+sim.obs.outlet.plot.2 <- ggplot(data=sim.obs.window,aes(x=time,y=sim))+geom_ribbon(data=sim.obs.window,aes(ymin=lower,ymax=upper),fill='grey70')+geom_line(data=sim.obs.window,aes(x=time,y=obs),color='red',linetype='solid') +theme(legend.position = "none")
+sim.obs.outlet.plot.2 <- sim.obs.outlet.plot.2+geom_line(color='black',size=.55)+ theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0)
+sim.obs.outlet.plot.2 <-  sim.obs.outlet.plot.2 + theme(axis.title.x=element_blank())
+sim.obs.outlet.plot.2
+
+plot(sim.obs.window$sim)
+```
+Okay good... the model works with the new spatial discretization. 
+
+Now on to the hydromet inputs... 
+
+```{r}
+if(length(run$Qsim)==12502) {
+    perc.diff.Qsim.explicit <- as.vector((run$Qsim-rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:33]))/run$Qsim*100)
+    
+    check.balances <- data.frame(explicit=rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:33]),
+                                 Qsim=run$Qsim,
+                                 diff.explicit.Qsim = rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:33]) -
+                                   run$Qsim,
+                                 qin=lumped.qin[1:length(run$Qsim),1],
+                                 diff.qin.Qsim = lumped.qin[1:length(run$Qsim),1]-
+                                   run$Qsim,
+                                 perc.diff.Qsim.explicit=perc.diff.Qsim.explicit)
+    
+  } else {
+    perc.diff.Qsim.explicit <- as.vector((run$Qsim[1:nrow(run$fluxes$qbf)]-rowSums(explicit.chan.inputs.qbf[,1:33]))/run$Qsim[1:nrow(run$fluxes$qbf)]*100)
+    check.balances <- data.frame(explicit=rowSums(explicit.chan.inputs.qbf[,1:33]),
+                                 Qsim=run$Qsim[1:nrow(run$fluxes$qbf)],
+                                 diff.explicit.Qsim = rowSums(explicit.chan.inputs.qbf[,1:33]) -
+                                   run$Qsim[1:nrow(run$fluxes$qbf)],
+                                 qin=lumped.qin[,1],
+                                 diff.qin.Qsim = lumped.qin[,1]-
+                                   run$Qsim[1:nrow(run$fluxes$qbf)],
+                                 perc.diff.Qsim.explicit=perc.diff.Qsim.explicit)
+  }
+```
+

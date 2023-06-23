@@ -1,0 +1,140 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This code is calculating the RMSE and NSE values
+
+-   First we will bring in the data
+
+-   Then we will calculate the mean of the observed time series
+
+-   Then we will calculate the RMSE and NSE in functions
+
+```{r}
+library(ggplot2)
+library(fitdistrplus)
+
+l.q.in <- read.csv('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/6 WRITE UP/SciHub/QvsLength.csv')
+
+df <- data.frame(matrix(nrow=length(l.q.in$Q.sim),ncol=2))
+names(df) <- c('x','y')
+
+df$x <- l.q.in$Q.sim
+
+df$y <- l.q.in$length
+
+df$z <- ((df$y-min(df$y))/(max(df$y)-min(df$y)))
+
+df.new <- df[order(x),]
+
+x <- df.new$x
+y <- df.new$y
+
+plot(x=df.new$x,y=df.new$y,log='x')
+
+weibull <- function(x) {
+  A <- 5000
+  alpha <- 0.01
+  beta <- .01
+  out <- A*(1-exp(-(x/alpha)^beta))
+  return(out)
+  
+}
+
+test <- weibull(x)
+
+plot(x,y,log='x')
+
+plot(y ~ x, log='x')
+fit <- nls(y ~ SSlogis(x, Asym, xmid, scal), data = data.frame(x, y))
+lines(x=x,y=fit$m$predict(),col='red')
+summary(fit)
+
+
+library(drc)
+
+df.new$y <- df.new$y/1000
+
+fm <- drm(y ~ x, data = df.new, fct = W1.4())
+fm.2 <- drm(y ~ x, data = df.new, fct = MM.3())
+
+#plot(fm$origData$x,fm$predres[,1],type='l')
+
+plot(fm,xlab='discharge mm d^-1',ylab='Stream Length (km)',log='x')
+lines(x=df.new$x,y=fm$predres[,1],col='blue')
+lines(x=df.new$x,y=fm.2$predres[,1],col='red')
+summary(fm)
+
+plot.df <- data.frame('discharge'=df.new$x,'stream_length'=df.new$y,'Weibull'=fm$predres[,1],'Michaelis_Menten'=fm.2$predres[,1])
+
+plot <- ggplot(data=plot.df)+geom_point(aes(x=discharge,y=stream_length)) + scale_x_continuous(trans='log10') + geom_line(aes(x=discharge,y=Weibull),color='#009E73',size=1.5) +  labs(x = expression(paste("Discharge (mm ", 'day'^-1,")")),y='Stream Length (km)') + theme_bw() 
+plot
+
+rsq <- function (x, y) cor(x, y) ^ 2
+
+r2.weibull <- rsq(x=plot.df$stream_length,y=plot.df$Weibull)
+r2.mm <- rsq(x=plot.df$stream_length,y=plot.df$Michaelis_Menten)
+
+rsq.2 <- function(x, y) summary(lm(y~x))$r.squared
+rsq(plot.df$stream_length, plot.df$Weibull)
+plot
+```
+
+Plot functions and fit models
+
+```{r}
+
+log.fit <- function(x,y){
+#Self-starting ...
+
+log.ss <- nls(y ~ SSlogis(x, phi1, phi2, phi3))
+
+#C
+C <- summary(log.ss)$coef[1]
+#a
+A <- exp((summary(log.ss)$coef[2]) * (1/summary(log.ss)$coef[3]))
+#k
+K <- (1 / summary(log.ss)$coef[3])
+
+plot(y ~ x, main = "Logistic Function", xlab='x', ylab='y')
+lines(0:max(x), predict(log.ss, data.frame(x=0:max(x))), col="red")
+
+r1 <- sum((x - mean(x))^2)
+r2 <- sum(residuals(log.ss)^2)
+
+r_sq <- (r1 - r2) / r1
+
+out <- data.frame(cbind(c(C=C, a=A, k=K, R.value=sqrt(r_sq))))
+names(out)[1] <- "Logistic Curve"
+
+return(out)
+}
+
+try.fun <- log.fit(x,y)
+```
+
+```{r}
+data <- read.csv('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/6 WRITE UP/SciHub/QvsLength.csv')
+View(data)
+
+
+
+rmse <- function(anything) {
+  sim <- anything[,2]
+  obs <- anything[,3]
+  
+  out <- sqrt(sum((sim-obs)^2))
+  
+  list.out <- list('sim.ts'=sim,'obs.ts'=obs,'out.numeric'=out)
+  
+  
+  return(list.out)
+  
+  
+  }
+
+test <- rmse(anything=data)
+print(test)
+
+```
