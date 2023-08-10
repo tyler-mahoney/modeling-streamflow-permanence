@@ -20,7 +20,7 @@ library(dynatopmodel)
 library(Evapotranspiration)
 ```
 
-# Step 2: Generate Time Series and Load Data
+# Step 2: Generate Time Series and Load Data for discharge and met data
 
 Note: the user **must** determine which dates to run the simulation and the model time step prior to executing this code. Periods for model warm up should also be specified. To run the model, it is necessary to generate time series for: 
 -   Precipitation
@@ -245,7 +245,108 @@ PET.mph.hamon.resample <- resample.xts(time.series = PET.mph.full.hamon,dt=dt,fu
   
 ```
 
-# Step 3: Combine the time series into a single output. 
+# Step 3: Create a time series for the logger data 
+Note: the inputs to run this code should be a single CSV for each flow logger to be included in the analysis.
+
+# Step 3.1: Read in the raw time series and convert to 15-min data
+-   For the 2004-2006 data from Ken Fritz, the data is recorded whenever the sensor notes a change in flow state at the closest minute. We will convert this to 15 minute data, then resample the dataset to the correct time step. 
+
+```{r}
+try(logger.clean.1 <- read.csv('HydroInputData/LM1_clean.csv'))
+
+if(is.null(logger.clean.1)) {
+
+  files.logger <- list.files('HydroInputData/',pattern='*raw.csv')                        # List files in the above directory
+  
+  for (i in files.logger) {
+    raw.logger <- read.csv(paste0('HydroInputData/',i))
+    colnames(raw.logger) <- c('point','logger_name','Time','state')
+    raw.logger$rawDate <- mdy_hm(raw.logger$Time)
+    
+    raw.logger$roundedTime <- round_date(raw.logger$rawDate,'15 minutes')
+    logger.clean <- raw.logger %>% dplyr::select(rawDate=rawDate, roundTime=roundedTime,state=state)
+    logger.clean <- logger.clean[!duplicated(logger.clean$roundTime),]
+    if (sum(duplicated(logger.clean$roundTime))>0) {
+      warning('there are duplicate timesteps. manually look through the data')
+    }
+    
+    # Create a time series and join with the data
+    start.logger <- as.POSIXct(raw.logger$roundedTime[1])
+    end.logger <- as.POSIXct(raw.logger$roundedTime[length(raw.logger$roundedTime)])
+    logger.clean.final <- data.frame(roundTime=(seq.POSIXt(start.logger,end.logger,by='15 mins')))
+    logger.clean.final <- left_join(logger.clean.final,logger.clean,by='roundTime')
+    
+    # Approximate the streamflow for steps without a value
+    logger.clean.final$state <- as.numeric(logger.clean.final$state)
+    approx_state <- logger.clean.final %>% tidyr::fill(state)
+    logger.clean.final$approx_state <- approx_state$state
+    
+    name <- substr(i,1,3)
+    
+    write.csv(logger.clean.final,paste0('HydroInputData/',name,'_clean.csv'))
+  }
+
+}
+
+
+```
+
+## Step 3.2 Resample the data to the correct dt
+-   NOTE: prior to running this, it is important to alter the "roundDate" column of the clean CSVs for the loggers such that they are in the format "mm/dd/yyyy hh:mm" otherwise an error will occur below. 
+-   It's also necessary to put in a CSV that has the names of the reaches with the logger sensors here. 
+```{r}
+logger.dir <- paste0('HydroInputData/',sep='')
+files.logger <- list.files(logger.dir,pattern='*clean.csv')                        # List files in the above directory
+reach.loggers <- read.csv('HydroInputData/LM-reaches-loggers.csv')
+TS.zoo.all <- list()
+TS.logger.clean.all <- list()
+for (file.name in 1:length(files.logger)) {                                                  # Iterate over each file
+  # Read in data and format
+  short.name <- substr(files.logger[file.name],start=1,
+                       stop=(nchar(files.logger[file.name])-10))               # Create name for the iteration
+  TS.logger <- read.csv(paste0(logger.dir,'/',files.logger[file.name]))                          # Read the CSV for the logger
+  TS.logger.clean <- data.frame(Date=TS.logger$roundTime,                          # Get only the relevant data Date
+                                State=TS.logger$approx_state)                       # Read approx state into data frame
+  TS.logger.clean$State[which(TS.logger.clean$State=='Missing data')] <- -1         # Set missing data to -1
+  TS.logger.clean$Date <- (mdy_hm(TS.logger.clean$Date))                          # Convert naming convention of the date
+  TS.logger.clean$Date2 <- as.Date(TS.logger.clean$Date)                           # Convert to base date 
+  TS.logger.clean$State <- as.numeric(TS.logger.clean$State)                       # Get the state
+                        # Convert to zoo
+  
+  # Calculate the statistics of the TS
+  on <- sum(TS.logger.clean$State==1, na.rm=T)                                     # Sum the 'wet' instances
+  off <- sum(TS.logger.clean$State==0, na.rm =T)                                   # Sum the 'dry' instances
+  Total.logger <- on+off                                                           # Get the total number of readings
+  percent.on <- on/Total.logger*100                                                # Convert wet to percent
+  
+  if (dt ==1) {
+    # subset the data such that the model timestep is the same as the time step prescribed herein
+  TS.logger.clean$hourly.date <- ceiling_date(TS.logger.clean$Date,unit = 'hour')
+  TS.logger.clean <- TS.logger.clean[which(TS.logger.clean$Date==TS.logger.clean$hourly.date),]
+  
+  }
+  
+  TS.zoo <- zoo(TS.logger.clean$State,TS.logger.clean$Date)  
+
+  if (file.name == 1) {                                              # write out the percentage on
+    name = paste0(short.name,'percent')                                            # First file
+    logger.out.percent <- data.frame(percent.on)                                   # write percent on
+  } else {                                                                         # other files 
+    name = paste0(short.name,'percent')                                            # set thier name
+    logger.out.percent <- cbind(logger.out.percent,percent.on)                     # bind the reading to the previous
+  }
+  TS.zoo.all[[file.name]] <- TS.zoo
+  TS.logger.clean.all[[file.name]] <- TS.logger.clean
+}
+colnames(logger.out.percent)=files.logger                                          # Set the names of the columns of the percent out 
+names(TS.zoo.all) <- files.logger
+names(TS.logger.clean.all) <- files.logger 
+
+
+```
+
+
+# Step 4: Combine the time series into a single output. 
 ```{r}
 
 input.timeseries <- list(P=P.mph.resample,PET=PET.mph.hamon.resample,
@@ -253,7 +354,9 @@ input.timeseries <- list(P=P.mph.resample,PET=PET.mph.hamon.resample,
 
 dynatop.hydro.met <- list('dt' = dt, 'input.timeseries' = input.timeseries,
                           'warmup.initial'=warmup.initial,'warmup.final'=warmup.final,
-                          'calibration.initial'=calibration.initial,'calibration.final'=calibration.final)
+                          'calibration.initial'=calibration.initial,'calibration.final'=calibration.final,
+                          'TS.zoo.all'=TS.zoo.all,'TS.logger.clean.all'=TS.logger.clean.all,
+                          'reach.loggers'=reach.loggers)
 
 saveRDS(dynatop.hydro.met,'HydroInputData/dynatop_hydromet_LM.RData')
 

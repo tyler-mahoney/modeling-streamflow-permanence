@@ -188,22 +188,15 @@ Dynatophydromod <- function(param.values,                                       
 # Function 3: Routing of Q from upper reaches to the watershed outlet
 # Post processing and routing of Q after calibration...
 
-explicit.routing.instant <- function(FR.Spatial,run,model.timestep) {
+
+explicit.routing.instant <- function(read.spatial,explicit.reach.table,run,model.timestep) {
   
   ############# READ IN REACH INPUTS AND CLEAN MATRICES #################
-  num.reach <- nrow(FR.Spatial$explicit.ChanTable)
-  explicit.disc <- FR.Spatial$explicit.disc                           # Read in the explicit disc
-  explicit.weights.full <- FR.Spatial$explicit.disc$weights
-  rownames(explicit.weights.full)[rownames(explicit.weights.full) == 'R25.6666666666667'] <- 'R26' # Replace R25.6 with R26
-  colnames(explicit.weights.full)[colnames(explicit.weights.full) == 'R25.6666666666667'] <- 'R26' # Replace R25.6 with R26
-  explicit.weights.full[,17] <- explicit.weights.full[,17]+                   # Correct the matrix for the 17 half reach... I'm assuming that 17.5 is just an extension of 17??
-    explicit.weights.full[,18]
-  explicit.weights.full[17,] <- explicit.weights.full[17,]+                   # Correct the matrix for the 17 half reach... I'm assuming that 17.5 is just an extension of 17??
-    explicit.weights.full[18,]
-  explicit.weights.full <- explicit.weights.full[,-18]   
-  explicit.weights.full <- explicit.weights.full[-18,] 
-  explicit.groups <- FR.Spatial$explicit.disc$groups[-34,]
-  groups <- FR.Spatial$disc$groups
+  num.reach <- nrow(explicit.reach.table)
+  explicit.disc <- read.spatial$explicit.disc                          # Read in the explicit disc
+  explicit.weights.full <- read.spatial$explicit.disc$weights
+  explicit.groups <- explicit.disc$groups
+  groups <- read.spatial$disc$groups
   
   # Initialize input matrices
   lumped.chan.inputs <- matrix(0,ncol= ncol(run$fluxes$qbf), 
@@ -247,166 +240,169 @@ explicit.routing.instant <- function(FR.Spatial,run,model.timestep) {
     flows.explicit.qbf <- rep(0,nrow(explicit.weights.full))  
     
     
-    flows.explicit.qbf[34:length(flows.explicit.qbf)] <- in.qbf[3:length(in.qbf)] 
+    flows.explicit.qbf[(num.reach+1):length(flows.explicit.qbf)] <- in.qbf[2:length(in.qbf)] 
     
     explicit.chan.inputs.qbf[iter,] <- as.vector((flows.explicit.qbf*explicit.groups$area) %*% explicit.weights.full)
     explicit.chan.inputs.qbf[iter,] <- explicit.chan.inputs.qbf[iter,] +
       (pex[1])*a.chan.explicit
     
-    correction <- as.numeric(run$Qsim[iter])/sum(explicit.chan.inputs.qbf[iter,1:33])
+    correction <- as.numeric(run$Qsim[iter])/sum(explicit.chan.inputs.qbf[iter,1:num.reach])
     
     explicit.chan.inputs.qbf[iter,] <- explicit.chan.inputs.qbf[iter,]*correction
     
     
   }
-  #plot(x=as.numeric(run$Qsim[1:length(run$fluxes$qin[,1])]),y=as.numeric(rowSums(explicit.chan.inputs.qbf[,1:33])))
   
-  if(length(run$Qsim)==12502) {
-    perc.diff.Qsim.explicit <- as.vector((run$Qsim-rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:33]))/run$Qsim*100)
-    
-    check.balances <- data.frame(explicit=rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:33]),
-                                 Qsim=run$Qsim,
-                                 diff.explicit.Qsim = rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:33]) -
-                                   run$Qsim,
-                                 qin=lumped.qin[1:length(run$Qsim),1],
-                                 diff.qin.Qsim = lumped.qin[1:length(run$Qsim),1]-
-                                   run$Qsim,
-                                 perc.diff.Qsim.explicit=perc.diff.Qsim.explicit)
-    
-  } else {
-    perc.diff.Qsim.explicit <- as.vector((run$Qsim[1:nrow(run$fluxes$qbf)]-rowSums(explicit.chan.inputs.qbf[,1:33]))/run$Qsim[1:nrow(run$fluxes$qbf)]*100)
-    check.balances <- data.frame(explicit=rowSums(explicit.chan.inputs.qbf[,1:33]),
-                                 Qsim=run$Qsim[1:nrow(run$fluxes$qbf)],
-                                 diff.explicit.Qsim = rowSums(explicit.chan.inputs.qbf[,1:33]) -
-                                   run$Qsim[1:nrow(run$fluxes$qbf)],
-                                 qin=lumped.qin[,1],
-                                 diff.qin.Qsim = lumped.qin[,1]-
-                                   run$Qsim[1:nrow(run$fluxes$qbf)],
-                                 perc.diff.Qsim.explicit=perc.diff.Qsim.explicit)
-  }
+  # Check the water balance
+  #  perc.diff.Qsim.explicit <- as.vector((run$Qsim-rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:num.reach]))/run$Qsim*100)
+  
+  #    check.balances <- data.frame(explicit=rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:num.reach]),
+  #                                 Qsim=run$Qsim,
+  #                                 diff.explicit.Qsim = rowSums(explicit.chan.inputs.qbf[1:length(run$Qsim),1:num.reach]) -
+  #                                   run$Qsim,
+  #                                 qin=lumped.qin[1:length(run$Qsim),1],
+  #                                 diff.qin.Qsim = lumped.qin[1:length(run$Qsim),1]-
+  #                                   run$Qsim,
+  #                                 perc.diff.Qsim.explicit=perc.diff.Qsim.explicit)
   
   
   ############# ROUTE WATER FROM REACHES ############
   
   ####### Routing with no dispersion/lag #######
-  explicit.reach.table <- FR.Spatial$explicit.ChanTable           # Write the table of reach information 
-  reach.name <- explicit.reach.table$link_no                      # Write the reach names/link numbers
+  reach.name <- paste0('R',explicit.reach.table$link_no)                      # Write the reach names/link numbers
   explicit.chan.inputs <- data.frame(explicit.chan.inputs.qbf)
-  reach.name <- c(reach.name,groups$id[3:length(groups$id)])      # Need to check if there are duplicate names
+  reach.name <- c(reach.name,paste0('HRU',groups$id[2:length(groups$id)]))      # Need to check if there are duplicate names
   duplicate.reaches.hru <- sum(duplicated(reach.name))
   # if duplcicated.reaches.hru > 0, then output a warning
+  if (duplicate.reaches.hru > 0) {warning('reach names are duplicated. this will likely cause errors.')}
   
   names(explicit.chan.inputs) <- reach.name                       # Assign reach names to columns in the inflow matrix
-  if (length(run$Qsim) == 12502) {
-    explicit.chan.inputs <- explicit.chan.inputs[,1:33]
-  } else {
-    explicit.chan.inputs <- explicit.chan.inputs[,1:33]
-  }
+  explicit.chan.inputs <- explicit.chan.inputs[,1:num.reach]
   
   routed.flow.instant <- data.frame(matrix(nrow=nrow(explicit.chan.inputs),  # Initialize a dataframe of the same size of the channel inputs
-                                           ncol=ncol(explicit.chan.inputs))) # Continued - for instant routed 
+                                           ncol=ncol(explicit.chan.inputs))) # Continued - for instant routed  (m^3/hr)
+  
   names(routed.flow.instant) <- names(explicit.chan.inputs)                   # Assigne reach names to columsn in the isntant routed  flow
-  reach.name <- reach.name[1:33]
+  reach.name <- reach.name[1:num.reach]
   
   routed.flow.kinematic <- data.frame(matrix(nrow=nrow(explicit.chan.inputs),  # Initialize a dataframe of the same size of the channel inputs
                                              ncol=ncol(explicit.chan.inputs))) # Continued - for instant routed 
   names(routed.flow.kinematic) <- names(explicit.chan.inputs)      
   
-  # FIRST ORDER REACHES - calculate for the first order reaches first
-  for (reach.1 in reach.name[explicit.reach.table[,5]==1]) {      # For each of the reaches where in the explicit reach table the stream order is 1
+  # We want to run the routing algorithm such that we start at the most distal reaches and work our way down stream. 
+  
+  # We need to calculate this for two types of first-order reaches: "true" first order reaches, which don't have any upstream reach and 
+  # "downstream" first order reaches - those which have contribution from an upstream reach which is still a first order reach.
+  
+  # This account for breaking a reach up into multiple reaches. Note: if we were to do this for second- or third-order reaches, we'd need to do the samething for those reaches. 
+  
+  first.order.true <- rev(reach.name[which(explicit.reach.table$`stream_order`==1 & explicit.reach.table$`us_link_1`==-1 & explicit.reach.table$`us_link_2`==-1)]) 
+  first.order.down.stream <- rev(reach.name[which(explicit.reach.table$`stream_order`==1 & explicit.reach.table$`us_link_1`!=-1 & explicit.reach.table$`us_link_2`==-1)]) 
+  
+  # TRUE FIRST ORDER REACHES - calculate for the first order reaches first at the highest point in the watershed
+  for (reach.1 in first.order.true) {      # For each of the reaches where in the explicit reach table the stream order is 1
     reach.char.1 <- as.character(reach.1)                         # Write the reach as a character (for referenceing purposes)
+    name.no.r <- as.integer(substr(reach.1,2,nchar(reach.1)))     # Convert the name to an integer because that's how it is in the explicit.reach.table
+    
     routed.flow.instant[,reach.char.1] <-                         # Write to the routed.flow.instant data frame with the reach character as the column name
       explicit.chan.inputs[,as.character(reach.1)]                # Since it's a first order reach, the flow is just from the inputs
     routed.flow.kinematic[,reach.char.1] <- explicit.chan.inputs[,as.character(reach.1)]
   }
   
+  # DOWNSTREAM FIRST ORDER REACHES - calculate for the first order reaches first DOWNSTREAM OF THOSE at the highest point in the watershed
+  for (reach.1 in first.order.down.stream) {      # For each of the reaches where in the explicit reach table the stream order is 1 and there is a SINGLE contributing 1st order reach
+    reach.char.1 <- as.character(reach.1)                         # Write the reach as a character (for referenceing purposes)
+    name.no.r <- as.integer(substr(reach.1,2,nchar(reach.1)))     # Convert the name to an integer because that's how it is in the explicit.reach.table
+    routed.flow.instant[,reach.char.1] <-                         # Write to the routed.flow.instant data frame with the reach character as the column name
+      explicit.chan.inputs[,as.character(reach.1)] +                # Since it's a first order reach, the flow is just from the inputs
+      routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r]))]
+    
+    routed.flow.kinematic[,reach.char.1] <- as.numeric(kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.1)],                                                        inflow.reach.i=routed.flow.instant[,paste0('R',explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r])],
+                                                                     width=explicit.reach.table$width_m2[explicit.reach.table$link_no==name.no.r],
+                                                                     channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==name.no.r]*0.3048,
+                                                                     slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==name.no.r],
+                                                                     manning.n=read.spatial$disc$groups$mann.n[1],
+                                                                     timestep=model.timestep*60*60))
+    
+  }
+  
   # SECOND ORDER REACHES - calculate for the second order reaches
-  second.order <- rev(reach.name[explicit.reach.table[,5]==2])    # Reverse the order because the lower 2nd order reaches might contain other 2nd order reaches
+  second.order <- rev(reach.name[explicit.reach.table$`stream_order`==2])    # Reverse the order because the lower 2nd order reaches might contain other 2nd order reaches
   for (reach.2 in second.order) {                                 # For each of the reaches where in the explicit reach table the stream order is 2 
     reach.char.2 <- as.character(reach.2)                         # Write the reach as a character for referencing
+    name.no.r <- as.integer(substr(reach.2,2,nchar(reach.2)))     # Convert the name to an integer because that's how it is in the explicit.reach.table
     routed.flow.instant[,reach.char.2] <-                         # Write to the routed.flow.instant data frame with reach
       explicit.chan.inputs[,as.character(reach.2)] +                                                             # Inflow from the uplands
-      routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.2])] + # Inflow from the first reach
-      routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.2])]   # Inflow from the second reach
+      routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r]))] + # Inflow from the first reach
+      routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_2[explicit.reach.table$link_no==name.no.r]))]   # Inflow from the second reach
     
-    routed.flow.kinematic[,reach.char.2] <- kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.2)],
-                                                          inflow.reach.i=routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.2])] + # Inflow from the first reach
-                                                            routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.2])],
-                                                          width=explicit.reach.table$width_m2[explicit.reach.table$link_no==reach.2],
-                                                          channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==reach.2]*0.3048,
-                                                          slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==reach.2],
-                                                          manning.n=FR.Spatial$disc$groups$mann.n[1],
-                                                          timestep=model.timestep*60*60)
+    routed.flow.kinematic[,reach.char.2] <- as.numeric(kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.2)],                                                        inflow.reach.i=routed.flow.instant[,paste0('R',explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r])] + # Inflow from the first reach
+                                                                       routed.flow.instant[,paste0('R',explicit.reach.table$us_link_2[explicit.reach.table$link_no==name.no.r])],
+                                                                     width=explicit.reach.table$width_m2[explicit.reach.table$link_no==name.no.r],
+                                                                     channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==name.no.r]*0.3048,
+                                                                     slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==name.no.r],
+                                                                     manning.n=read.spatial$disc$groups$mann.n[1],
+                                                                     timestep=model.timestep*60*60))
     
   }
   
   #THIRD ORDER REACHES
-  third.order <- rev(reach.name[explicit.reach.table[,5]==3])     # Reverse the order because the lower 3rd order reaches might contain other 3rd order reaches
+  third.order <- rev(reach.name[explicit.reach.table$`stream_order`==3])     # Reverse the order because the lower 3rd order reaches might contain other 3rd order reaches
   for (reach.3 in third.order) {                                  # For each of the reaches where in the explicit reach table the stream order is 3 
     reach.char.3 <- as.character(reach.3)                         # Write the reach as a character for referencing
+    name.no.r <- as.integer(substr(reach.3,2,nchar(reach.3)))
     routed.flow.instant[,reach.char.3] <-                         # Write to the routed.flow.instant data frame with reach
       explicit.chan.inputs[,as.character(reach.3)] +                                                              # Inflow from the uplands
-      routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.3])] + # Inflow from the first reach
-      routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.3])]   # Inflow from the second reach
+      routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r]))] + # Inflow from the first reach
+      routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_2[explicit.reach.table$link_no==name.no.r]))]   # Inflow from the second reach
     
-    routed.flow.kinematic[,reach.char.3] <- kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.3)],
-                                                          inflow.reach.i=routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.3])] + # Inflow from the first reach
-                                                            routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.3])],
-                                                          width=explicit.reach.table$width_m2[explicit.reach.table$link_no==reach.3],
-                                                          channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==reach.3]*0.3048,
-                                                          slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==reach.3],
-                                                          manning.n=FR.Spatial$disc$groups$mann.n[1],
-                                                          timestep=model.timestep*60*60)
+    routed.flow.kinematic[,reach.char.3] <- as.numeric(kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.3)],                                                        inflow.reach.i=routed.flow.instant[,paste0('R',explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r])] + # Inflow from the first reach
+                                                                       routed.flow.instant[,paste0('R',explicit.reach.table$us_link_2[explicit.reach.table$link_no==name.no.r])],
+                                                                     width=explicit.reach.table$width_m2[explicit.reach.table$link_no==name.no.r],
+                                                                     channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==name.no.r]*0.3048,
+                                                                     slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==name.no.r],
+                                                                     manning.n=read.spatial$disc$groups$mann.n[1],
+                                                                     timestep=model.timestep*60*60))
   }
   
   #FOURTH ORDER REACHES
-  fourth.order <- rev(reach.name[explicit.reach.table[,5]==4])    # Reverse the order because the lower 4th order reaches might contain other 4th order reaches
+  fourth.order <- rev(reach.name[explicit.reach.table$`stream_order`==4])    # Reverse the order because the lower 4th order reaches might contain other 4th order reaches
   for (reach.4 in fourth.order) {                                 # For each of the reaches where in the explicit reach table the stream order is 4
     reach.char.4 <- as.character(reach.4)                         # Write the reach as a character for referencing
-    routed.flow.instant[,reach.char.4] <-                         # Write to the routed.flow.instant data frame with reach
-      explicit.chan.inputs[,as.character(reach.4)] +                                                             # Inflow from the uplands
-      routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.4])] + # Inflow from the first reach
-      routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.4])]   # Inflow from the second reach
+    name.no.r <- as.integer(substr(reach.4,2,nchar(reach.4)))
+    try(routed.flow.instant[,reach.char.4] <-                         # Write to the routed.flow.instant data frame with reach
+          explicit.chan.inputs[,as.character(reach.4)] +                                                             # Inflow from the uplands
+          routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r]))] + # Inflow from the first reach
+          routed.flow.instant[,paste0('R',as.character(explicit.reach.table$us_link_2[explicit.reach.table$link_no==name.no.r]))] )  # Inflow from the second reach
     
-    routed.flow.kinematic[,reach.char.4] <- kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.4)],
-                                                          inflow.reach.i=routed.flow.instant[,as.character(explicit.reach.table[,3][explicit.reach.table$link_no==reach.4])] + # Inflow from the first reach
-                                                            routed.flow.instant[,as.character(explicit.reach.table[,4][explicit.reach.table$link_no==reach.4])],
-                                                          width=explicit.reach.table$width_m2[explicit.reach.table$link_no==reach.4],
-                                                          channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==reach.4]*0.3048,
-                                                          slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==reach.4],
-                                                          manning.n=FR.Spatial$disc$groups$mann.n[1],
-                                                          timestep=model.timestep*60*60)
+    try(routed.flow.kinematic[,reach.char.4] <- as.numeric(kinematicWave(lateral.inflow=explicit.chan.inputs[,as.character(reach.4)],                                                        inflow.reach.i=routed.flow.instant[,paste0('R',explicit.reach.table$us_link_1[explicit.reach.table$link_no==name.no.r])] + # Inflow from the first reach
+                                                                           routed.flow.instant[,paste0('R',explicit.reach.table$us_link_2[explicit.reach.table$link_no==name.no.r])],
+                                                                         width=explicit.reach.table$width_m2[explicit.reach.table$link_no==name.no.r],
+                                                                         channel.length=explicit.reach.table$stream_length_ft[explicit.reach.table$link_no==name.no.r]*0.3048,
+                                                                         slope=explicit.reach.table$stream_slope_ftpft[explicit.reach.table$link_no==name.no.r],
+                                                                         manning.n=read.spatial$disc$groups$mann.n[1],
+                                                                         timestep=model.timestep*60*60)))
   }
   
-  if (length(run$Qsim)==12502) {
-    Qout.lumped=as.vector(run$Qsim)/(3600)
-    Qout.explicit.routed=routed.flow.instant[1:length(run$Qsim),1]/(3600)
-  } else {
-    Qout.lumped=as.vector(run$Qsim[1:nrow(run$fluxes$qbf)])/(3600)
-    Qout.explicit.routed=routed.flow.instant[,1]/(3600)
-  }
+  # Comparing m^3/s
+  Qout.lumped=as.vector(run$Qsim[1:nrow(run$fluxes$qbf)])/(3600)
+  Qout.explicit.routed=routed.flow.instant[,1]/(3600)
   
-  
-  if (length(run$Qsim) ==12502) {
-    percent.diff=((run$Qsim-routed.flow.instant[1:length(run$Qsim),1])/run$Qsim)*100
-    check.balances.new <- data.frame(Qout=run$Qsim,
-                                     routed.flow.instant=routed.flow.instant[1:length(run$Qsim),1],
-                                     percent.diff=percent.diff)
-  } else {
-    percent.diff=((run$Qsim[1:nrow(run$fluxes$qbf)]-routed.flow.instant[,1])/run$Qsim[1:nrow(run$fluxes$qbf)])*100
-    check.balances.new <- data.frame(Qout=run$Qsim[1:nrow(run$fluxes$qbf)],
-                                     routed.flow.instant=routed.flow.instant[,1],
-                                     percent.diff=percent.diff)
-  }
+  percent.diff=((run$Qsim[1:nrow(run$fluxes$qbf)]-routed.flow.instant[,1])/run$Qsim[1:nrow(run$fluxes$qbf)])*100
+  check.balances.new <- data.frame(Qout=run$Qsim[1:nrow(run$fluxes$qbf)],
+                                   routed.flow.instant=routed.flow.instant[,1],
+                                   percent.diff=percent.diff)
   
   check.balances.newest <- list(check.balances=check.balances.new,min.perc.diff=min(percent.diff),max.perc.diff=max(percent.diff),avg.perc.diff=mean(percent.diff))
   
   # Current units of routed.flow.instant are m^3/hr... convert to mm/s
   routed.flow.instant.mm_s <- sweep(routed.flow.instant,2,explicit.reach.table$US_area_m2,FUN='/')/3600*1000
+  routed.flow.kinematic.mm_s <- sweep(routed.flow.kinematic,2,explicit.reach.table$US_area_m2,FUN='/')/3600*1000
   
   routing.out <- list(check.balances.new=check.balances.newest, routed.flow.instant.m3_hr=routed.flow.instant,
                       routed.flow.instant.mm_s=routed.flow.instant.mm_s,
-                      routed.flow.kinematic.m3_hr=routed.flow.kinematic)
+                      routed.flow.kinematic.m3_hr=routed.flow.kinematic,
+                      routed.flow.kinematic.mm_s=routed.flow.kinematic.mm_s)
   
   
   #View(check.balances)
@@ -424,7 +420,7 @@ kinematicWave <- function(lateral.inflow,inflow.reach.i,width,channel.length,slo
   
   ## Explanation of arguments
   # lateral.inflow = vector of lateral inflow to reach j during timestep i (m^3/hr)
-  # inflow.reach.i = vector of inflow from the previous reach (m^3/hr)
+  # inflow.reach.i = vector of inflow from the upstream reach (m^3/hr)
   # width = width of the reach (m)
   # length = legnth of the reach (m)
   # slope = slope of the channel (m/m)
@@ -460,4 +456,320 @@ kinematicWave <- function(lateral.inflow,inflow.reach.i,width,channel.length,slo
   # Convert back to m^3/hr
   Q.outflow <- Q.outflow*60*60 
   return(Q.outflow)
+}
+
+# Function 5: Fucntion to evaluate each behavioral parameterization and simulate streamflow permanence  
+Headwater.evaluation.dynamic <- function(qin.file, FR.Spatial, TS.logger.clean.all, TS.zoo.all, logger.out.percent, Reach.identifiers, Reach.identifiers.second,model.timestep, result.optim.run, time.qbf, ...) {
+  # Read in explicit HRU results for fluxes and storages from the behavioral sets
+  # NOTE WE MUST SET THE DIRECTORY TO THE PROPER CALIBRATION TEST FOLDER, AS OF 7/6/2021 IT IS CalibrationTest13
+  fluxes.stores.dir <- paste0(getwd(),'/CalibrationOutput/fluxes_stores/')
+  #setwd('C:/Users/david/OneDrive/Desktop/EPA/EPA/6 PROJECT 1 KENTUCKY HEADWATER STREAMS/4 ANALYSIS/2 DYNAMIC TOPMODEL ANALYSIS/1 FR Test/Calibration/CalibrationTest13/fluxes_stores')
+  qin.run <- read.csv(paste0(fluxes.stores.dir,'fluxqin',qin.file,'.csv'))                           # Read qin 
+  qin.run <- xts(qin.run[,-1],time.qbf)                                            # Convert to xts
+  qbf.run <- read.csv(paste0(fluxes.stores.dir,'fluxqbf',qin.file,'.csv'))                           # Read qbf
+  qbf.run <- xts(qbf.run[,-1],time.qbf)                                            # Convert to xts
+  ae.run <- read.csv(paste0(fluxes.stores.dir,'fluxae',qin.file,'.csv'))                             # Read ae
+  ae.run <- xts(ae.run[,-1],time.qbf)                                              # Convert to xts
+  rain.run <- read.csv(paste0(fluxes.stores.dir,'fluxrain',qin.file,'.csv'))                         # Read rain
+  rain.run <- xts(rain.run[,-1],time.qbf)                                          # Convert to xts
+  qof.run <- read.csv(paste0(fluxes.stores.dir,'fluxqof',qin.file,'.csv'))                           # Read qof
+  qof.run <- xts(qof.run[,-1],time.qbf)                                            # Convert to xts
+  Qsim.run <- read.csv(paste0(fluxes.stores.dir,'qsim',qin.file,'.csv'))                             # Read Qsim
+  Qsim.run <- xts(Qsim.run[,-1],time.qbf)                                          # Convert to xts
+  compile.fluxes <- list(qin = qin.run, qbf = qbf.run, ae = ae.run,                # Compile fluxes 
+                         rain = rain.run, qof = qof.run)                           # Into list
+  compile.run <- list(fluxes=compile.fluxes, Qsim = Qsim.run)                      # Compile fluxes and Qsim into list
+  
+  # Run routing function -- note TOPMODEL puts out data in m/hr for reach-specific flow in runoff
+  explicit.routing.run <- explicit.routing.instant(FR.Spatial,                     # Read in FR.Spatial and the compiled run
+                                                   run=compile.run,
+                                                   model.timestep = model.timestep)# Run the explicit routing code for the simulation
+  Q <- data.frame(explicit.routing.run$routed.flow.instant.mm_s)                   # Assign the routed flow instant (mm/s) to a variables
+  r.names <- names(Q)                                                              # Get the reach names
+  
+  # Convert Q from mm/s to mm/day
+  Q <- Q*60*60*24                                                                  # This is important for some of the empirical calculations we'll later need to do
+  
+  # Calculate the fdc of each reach 
+  Flow.duration.reaches <- matrix(0,nrow = length(Q[,1]),ncol = length(r.names))   # initialize the flow duration matrix
+  Q.in.rank <- matrix(0,nrow = length(Q[,1]),ncol = length(r.names))               # Initialize the Q in rank matrix
+  colnames(Flow.duration.reaches) <- r.names                                       # Assign names to the flow duration matrix
+  colnames(Q.in.rank) <- r.names                                                   # Assign names to the Q in rank matrix
+  
+  # Run the FDC code for the reaches
+  for (r.name in 1:length(r.names)) {                                              # For each of the reaches
+    if (r.name != 26) {                                                            # Skip reach 26 because it isn't working properly
+      Q.in <- Q[,r.name]                                                           # Assing the Q in for a reach
+      order <- explicit.reach.table[r.name,5]                                      # Get the stream order
+      Q.in.sort <- data.frame(flow.asc=sort(Q.in,decreasing =T))                   # Rank/sort the Q in
+      rank <- 1:length(Q.in)                                                       # Get the rank
+      Q.in.sort$rank <- rank                                                       # assign the rank for the sorted data dataframe
+      Q.in.sort$Prob.Q.in <- 100*(Q.in.sort$rank/(length(Q.in)+1))                 # Calculate the probablility
+      Flow.duration.reaches[,paste0('X',as.character(explicit.reach.table$link_no[r.name]))] <- Q.in.sort$Prob.Q.in                                # Record the probability 
+      Q.in.rank[,paste0('X',as.character(explicit.reach.table$link_no[r.name]))] <- Q.in.sort$flow.asc                                             # Record the ascending flow
+      order <- explicit.reach.table[r.name,5]                                      # Determine the order 
+    }
+  }
+  Flow.duration.reaches <- data.frame(Flow.duration.reaches)                       # Write flow duration as a dataframe
+  Q.in.rank <- data.frame(Q.in.rank)                                               # Write flow duration as a dataframe  
+  
+  # Write a function that returns the flow associated with the flow threshold percentage desired by the user
+  nearest <- function(want,have) {                                                 # Function's name is nearest, two arguments in
+    near <- which(abs(want-have)==min(abs(want-have)))                             # Return the percentage that's nearest to the desired percentage threshold
+    return(near)                                                                   # Return the percentage
+  }
+  
+  x=Sys.time()
+  ## Run the analysis for 1000 flow thresholds, output the optimum flow threshold. 
+  min.threshold <- 0.05                                                           # This was the minimum transmissivity scaling exponent measured from the Prancevic and Kirchner 2018 Paper
+  max.threshold <- 10                                                           # This was the maximum transmissivity scaling exponent measured from the Prancevic and Kirchner 2018 Paper
+  gamma.range <- seq(from=log(min.threshold), to = log(max.threshold),                       # Creates a sequency of 1000 thresholds for which we'll calculate the % correct
+                     by = (log(max.threshold)-log(min.threshold))/500)                 # Continued 
+  
+  # Format the data 
+  names.loggers <- names(TS.logger.clean.all)
+  
+  # Initialize the lists for each of the loggers. 
+  logger.TS <- list()                                                              # Initialize the logger Timeseries list
+  logger.timeseries <- list()
+  #sim.obs.difference <- list()
+  confusion.matrix.thresh <- list()
+  out.thresh.df <- list()
+  reach.slope <- data.frame(matrix(nrow=4))
+  reach.contributing.area <- data.frame(matrix(nrow=4))
+  
+  for (name.logger in 1:length(names.loggers)) {
+    # Format the time series properly
+    time.sim <- time(result.optim.run$run$fluxes$qin)                                # Get the time stamp for the qsim
+    time.sim <- data.frame(Date=time.sim)                                            # Set the col name to 'Date'
+    logger.TS[[name.logger]] <- data.frame(state=TS.zoo.all[[name.logger]],
+                                           Date=TS.logger.clean.all[[name.logger]]$Date)                  # Get the logger time series
+    
+    # Join the logger.TS to the time.sim 
+    logger.timeseries[[name.logger]] <- left_join(time.sim,logger.TS[[name.logger]],by='Date')                                    # Join the logger data to the time series
+    logger.timeseries[[name.logger]]$state <- ifelse(logger.timeseries[[name.logger]]$state==3,NA,logger.timeseries[[name.logger]]$state)        # Set NA values
+    logger.timeseries[[name.logger]] <- logger.timeseries[[name.logger]][complete.cases(logger.timeseries[[name.logger]]),]                      # Remove rows with NA values
+    
+    # initialize the matrix that records the difference in simulated and observed
+    sim.obs.difference[[name.logger]] <- data.frame(
+      matrix(nrow=length(logger.timeseries[[name.logger]]$Date),ncol=length(gamma.range)+1))
+    
+    # Get the contributing area and slope for the reach 
+    reach.name.dynamic <- which(                                                 # Determine which row the reach name of the logger belongs to
+      FR.Spatial$explicit.ChanTable$link_no==                                    # Compare the list of reach numbers to the current logger being evaluated
+        as.numeric(sub('.','',Reach.identifiers[name.logger])))                  # Define the reach name as a numeric
+    reach.slope[name.logger,1] <-                                                  # Determine the slope of the reach (ft/ft) or (m/m)
+      FR.Spatial$explicit.ChanTable$stream_slope_ftpft[reach.name.dynamic]       # Using the which function from above
+    reach.contributing.area[name.logger,1] <-                                      # Determine the contributing area (m^2) using the which function from aboce
+      FR.Spatial$explicit.ChanTable$US_area_m2[reach.name.dynamic]               # Using the function from above
+    
+    # Convert contributing area to km2
+    reach.contributing.area[name.logger,1] <- 
+      reach.contributing.area[name.logger,1]*1e-6
+    
+    # Run the analysis to simulate the 1/0 time series for the four sensors over the 1000 transmissivity scaling exponents
+    for (gamma.in in 1:length(gamma.range)) {                                              
+      # Write the simulated 1/0 time series for the average threshold
+      
+      # Determine the subsurface flow capacity of the valley below the reach. This equation is proposed in Godsey and Kirchner (2018) and Prancevic and Kirchner (2014)
+      transmissivity <- exp(gamma.range[gamma.in])
+      thresh <- transmissivity*reach.slope[name.logger,1]
+      
+      #percent.thresh <- Flow.duration.reaches[which(r.names==Reach.identifiers[name.logger])][nearest(Q.in.rank[which(r.names==Reach.identifiers[name.logger])],         # Look at the flow duration for reach 810 (associated with FC4) and 
+      #                                                                                                thresh),1]                            # Look at the flow duration for reach 810 (associated with FC4) and 
+      explicit.r.names <- names(explicit.routing.run$routed.flow.instant.m3_hr)
+      sim.810.on <- 
+        ifelse(explicit.routing.run$routed.flow.instant.m3_hr[which(explicit.r.names==Reach.identifiers.second[name.logger])]>thresh,           # USing the iterative threshold
+               1,0)                                                               # Set the values greater than the threshold to one, otherwise set to zero 
+      sim.810.on <- data.frame(sim.810.on)                                           # Convert to a data frame
+      time.sim <- time(result.optim.run$run$fluxes$qin)                              # Get the time stamp for the qsim
+      sim.810.on$Date <- time.sim                                                    # Set the date of the data frame to the time.sim 
+      
+      # Compare the logger 1/0 to the simulated 1/0
+      sim.obs.match <- left_join(logger.timeseries[[name.logger]],sim.810.on,by='Date')                           # Join the logger time series to the simulated time series by the date
+      sim.obs.match$state <- as.numeric(sim.obs.match$state)                                   # Write the state as a numeric
+      sim.obs.match[,3] <- as.numeric(sim.obs.match[,3])
+      sim.obs.match$difference <- sim.obs.match$state-sim.obs.match[,3]                     # Subtract simulated state from the observed state. state is observed, order.1.on is simulated; if the difference is 0 then the sim and obs match. If it's 1 then the obs = 1 and sim = 0. If it's -1 then obs = 0 and sim = 1
+      sim.obs.match$difference <- ifelse(sim.obs.match$difference==3|
+                                           sim.obs.match$difference==2,  # If the difference is 3 or 2, then this should just be set to NA. I set observed NA values to 3 before, not sure why but it makes the code work.
+                                         NA,sim.obs.match$difference)                          # If it's 3 or 2 then it will just be NA, otherwise it will be the correct difference.
+      
+      # Sum the number of correct, missed on, missed off values 
+      zero.difference <- sum(sim.obs.match$difference==0,na.rm=T)                          # Zero values mean sim and obs state match; this is the sum of zero difference time steps
+      true.on <- sum(ifelse(sim.obs.match$state==1 & sim.obs.match[,3]==1, # See if both obs and model equal 1
+                            1,0),na.rm=T)                                                    # Calculate the true positives
+      true.off <- sum(ifelse(sim.obs.match$state==0 & sim.obs.match[,3]==0,# See if both obs and model equal 0
+                             1,0),na.rm=T)                                                   # Calculate the true negatives
+      missed.on <- sum(sim.obs.match$difference==1,na.rm=T)                                # 1 means the obs = 1 and sim = 0; so the model missed the sensor being 'on' or 'wet' since 1 - 0 = 1
+      missed.off <- sum(sim.obs.match$difference==-1,na.rm=T)                              # -1 means the obs = 0 and the sim = 1; so the model missed the sensor being 'off' or 'dry' since 0 - 1 = -1
+      
+      correct.state.percent.thresh <-                                                         # The correct percent is the total number of times when the difference is zero
+        zero.difference/(zero.difference+missed.on+missed.off)*100                     # divided by the total number of timesteps when the sensor has data 
+      
+      flow.permanence.thresh <- sum(sim.obs.match[,3]==1)/length(sim.obs.match[,3])     # Flow permanence is the sum of time steps when the sensor is 'on' or 'wet' divided by the total number of time steps 
+      
+      if(gamma.in==1) {
+        confusion.matrix.thresh[[name.logger]] <- data.frame(true.on=true.on,                         # Calc the confusion matrix
+                                                             true.off=true.off,                      # True off  
+                                                             missed.on=missed.on,                    # missed on
+                                                             missed.off=missed.off)                  # missed off
+      } else { 
+        confusion.matrix.join.thresh <- data.frame(true.on=true.on,                    # Join to the previous matrix      
+                                                   true.off=true.off,                       # true off
+                                                   missed.on=missed.on,                     # missed on
+                                                   missed.off=missed.off)                   # missed off
+        confusion.matrix.thresh[[name.logger]] <- rbind(confusion.matrix.thresh[[name.logger]],                       # Join to the previous
+                                                        confusion.matrix.join.thresh)                  # Just created join matrix
+      }
+      
+      # Calculate the percent thresh 
+      
+      if (gamma.in==1) {
+        out.thresh.df[[name.logger]] <- data.frame(percent.correct=correct.state.percent.thresh,
+                                                   flow.thresh=thresh, sum.correct=sum(true.on,true.off), # percent.thresh=percent.thresh,
+                                                   sum.incorrect=sum(missed.on,missed.off),
+                                                   transmissivity = transmissivity)
+      } else {
+        out.thresh.bind <- data.frame(percent.correct=correct.state.percent.thresh,
+                                      flow.thresh=thresh, sum.correct=sum(true.on,true.off), # percent.thresh=percent.thresh,
+                                      sum.incorrect=sum(missed.on,missed.off),
+                                      transmissivity = transmissivity)
+        out.thresh.df[[name.logger]] <- rbind(out.thresh.df[[name.logger]],out.thresh.bind)
+      }
+      
+      # Write out the difference into a big matrix.
+      #if (gamma.in==1) {
+      #  sim.obs.difference[[name.logger]][,1] <- sim.obs.match$Date
+      #  sim.obs.difference[[name.logger]][,gamma.in+1] <- sim.obs.match$difference
+      #} else {
+      #  sim.obs.difference[[name.logger]][,gamma.in+1] <- sim.obs.match$difference
+      #}
+    }
+  }
+  Sys.time()-x
+  # Calculate the respective error for each flow thresh for each sensor
+  residual.on.off <- matrix(nrow=length(gamma.range),ncol=length(names.loggers))
+  residual.on.off[,1] <- confusion.matrix.thresh[[1]][,3]+
+    confusion.matrix.thresh[[1]][,4]
+  residual.on.off[,2] <- confusion.matrix.thresh[[2]][,3]+
+    confusion.matrix.thresh[[2]][,4]
+  residual.on.off[,3] <- confusion.matrix.thresh[[3]][,3]+
+    confusion.matrix.thresh[[3]][,4]
+  residual.on.off[,4] <- confusion.matrix.thresh[[4]][,3]+
+    confusion.matrix.thresh[[4]][,4]
+  
+  # Calculate the total residual error by summing the error for each sensor
+  rowSums.residual.on.off <- data.frame(sum.error=rowSums(residual.on.off),transmissivity=exp(gamma.range), 
+                                        thresh.1 = out.thresh.df[[1]]$flow.thresh,
+                                        thresh.2 = out.thresh.df[[2]]$flow.thresh,
+                                        thresh.3 = out.thresh.df[[3]]$flow.thresh,
+                                        thresh.4 = out.thresh.df[[4]]$flow.thresh)
+  
+  # calculate which threshold produces the minimum error accross all four sensors
+  thresh.best <- (rowSums.residual.on.off$transmissivity[which.min(rowSums.residual.on.off$sum.error)])
+  
+  best.residual.on.off <- rowSums.residual.on.off[which(rowSums.residual.on.off$transmissivity==thresh.best),]
+  # Output results for all thresholds into a list
+  flow.thresh.best.results <- 
+    list(out.thresh.data=out.thresh.df, #sim.obs.difference=sim.obs.difference, 
+         confusion.matrix=confusion.matrix.thresh,rowSums.residual.on.off=rowSums.residual.on.off)
+  
+  # 
+  for (name.logger in 1:length(names.loggers)) {
+    if (name.logger ==1) {
+      save.out.thresh.best <- data.frame(out.thresh.df[[name.logger]][which(out.thresh.df[[name.logger]]$flow.thresh==thresh.best),])
+    }else {
+      save.out.thresh.best.bind <- out.thresh.df[[name.logger]][which(out.thresh.df[[name.logger]]$flow.thresh==thresh.best),]
+      save.out.thresh.best <- rbind(save.out.thresh.best,save.out.thresh.best.bind)
+    }
+  }
+  
+  # Calculate the percent of time that the network is on and the percent of time the network is off
+  # Also calcualte the time series of on/off 
+  Q.sub.c.best <- thresh.best*FR.Spatial$explicit.ChanTable$stream_slope_ftpft
+  total.network.on.off <- data.frame(matrix(nrow=nrow(explicit.routing.run$routed.flow.instant.m3_hr),ncol=ncol(explicit.routing.run$routed.flow.instant.m3_hr)))
+  colnames(total.network.on.off) <- r.names
+  for (reach in 1:length(Q.sub.c.best)) {
+    total.network.on.off[,reach] <- ifelse(explicit.routing.run$routed.flow.instant.m3_hr[,reach]>Q.sub.c.best[reach],1,0)
+  }
+  
+  flow.network.thresh <- explicit.routing.run$routed.flow.instant.m3_hr
+  colnames(flow.network.thresh) <- r.names
+  for (reach in 1:length(Q.sub.c.best)) {
+    flow.network.thresh[flow.network.thresh[,reach] < (Q.sub.c.best[reach]),reach] <- 0
+  }
+  
+  
+  # Calculate the percent of time that each reach is considered to be on
+  reach.names.list <- colnames(total.network.on.off)
+  
+  percent.on.network <- c()
+  for (name.iter in 1:length(reach.names.list)) {
+    percent.on.network[name.iter] <- 
+      sum(total.network.on.off[,name.iter])/length(total.network.on.off[,name.iter])
+  }
+  
+  #best.percent.thresh <- out.thresh.df[[4]]$percent.thresh[which(out.thresh.df[[4]]$flow.thresh==(thresh.best))]
+  
+  # Write the simulated 1/0 time series for the best threshold
+  #order.1.on <- 
+  #  ifelse(explicit.routing.run$routed.flow.instant.m3_hr$`810`>thresh.best, # USing the averaged threshold
+  #         1,0)                                                                    # Set the values greater than the threshold to one, otherwise set to zero 
+  #order.1.on <- data.frame(order.1.on)                                             # Convert to a data frame
+  #time.sim <- time(result.optim.run$run$fluxes$qin)                                # Get the time stamp for the qsim
+  #order.1.on$Date <- time.sim                                                      # Set the date of the data frame to the time.sim 
+  
+  # Compare the logger 1/0 to the simulated 1/0
+  #final.match <- left_join(order.1.on,logger.timeseries[[4]],by='Date')                           # Join the logger time series to the simulated time series by the date
+  #final.match$state <- as.numeric(final.match$state)                                   # Write the state as a numeric
+  #final.match$difference <- final.match$state-final.match$order.1.on                     # Subtract simulated state from the observed state. state is observed, order.1.on is simulated; if the difference is 0 then the sim and obs match. If it's 1 then the obs = 1 and sim = 0. If it's -1 then obs = 0 and sim = 1
+  #final.match$difference <- ifelse(final.match$difference==3|final.match$difference==2,  # If the difference is 3 or 2, then this should just be set to NA. I set observed NA values to 3 before, not sure why but it makes the code work.
+  #                                 NA,final.match$difference) 
+  
+  # Sum the number of correct, missed on, missed off values for 2003 
+  #zero.difference.yr2003 <- sum(final.match$difference[2218:4473]==0,na.rm=T)        # This is the time when the sensor is actively collecting data between 2003-2004; sum the values equal to 0
+  #missed.on.yr2003 <- sum(final.match$difference[2218:4473]==1,na.rm=T)              # Sum the values equal to 1
+  #missed.off.yr2003 <- sum(final.match$difference[2218:4473]==-1,na.rm=T)            # Sum the values equal to 0
+  #correct.state.percent.yr2003 <- zero.difference.yr2003/                          # Calculate correct percent for 2003
+  #  (zero.difference.yr2003+missed.on.yr2003+missed.off.yr2003)*100                # number of time steps equal to zero divided by total number of timesteps for 2003
+  #flow.permanence.yr2003.sim <-                                                    # Simulated 2003 'on' divided by total 
+  #  sum(final.match$order.1.on[2218:4473]==1)/length(final.match$order.1.on[2218:4473])# 2003 time steps
+  #flow.permanence.yr2003 <-                                                        # observed 2003 fraction 'on' 
+  #  sum(final.match$state[2218:4473]==1,na.rm=T)/                                    # Total 1 divided by 
+  #  ((sum(final.match$state[2218:4473]==1,na.rm=T))+                                 # Total 1 plus
+  #     (sum(final.match$state[2218:4473]==0,na.rm=T)))                               # Total 0
+  
+  # Sum the number of correct, missed on, missed off values for 2005
+  #zero.difference.yr2005 <- sum(final.match$difference[10135:14323]==0,na.rm=T)      # This is the time when the sensor is actively collecting data between 2005-2006; sum the values equal to 0
+  #missed.on.yr2005 <- sum(final.match$difference[10135:14323]==1,na.rm=T)            # Sum the values equal to 1
+  #missed.off.yr2005 <- sum(final.match$difference[10135:14323]==-1,na.rm=T)          # Sum the values equal to -1
+  #correct.state.percent.yr2005 <- zero.difference.yr2005/                            # Calculate correct percent for 2005
+  #  (zero.difference.yr2005+missed.on.yr2005+missed.off.yr2005)*100                  # number of time steps equal to zero divided by total number of time steps
+  #flow.permanence.yr2005.sim <-                                                      # Simulated 2005 'on' divided by 
+  #  sum(final.match$order.1.on[10135:14323]==1)/                                     # total 2005 simulated
+  #  length(final.match$order.1.on[10135:14323])                                      # timesteps
+  #flow.permanence.yr2005 <-                                                          # Observed 2005 fraction 'on'  
+  #  sum(final.match$state[10135:14323]==1,na.rm=T)/                                  # total 1 divided by 
+  #  ((sum(final.match$state[10135:14323]==1,na.rm=T))+                               # Total 1 plus
+  #     (sum(final.match$state[10135:14323]==0,na.rm=T)))                             # Total 0
+  
+  # Calculate statistics for the flow exceeded, correct state percent for the total period, 2003, and 2005, flow permanence
+  #stats.on.off <- data.frame(                                          # Write flow exceeded and correct.state.percent
+  #  correct.percent.2003=correct.state.percent.yr2003, correct.percent.2005 = correct.state.percent.yr2005,               # Write the correct state for 2003 and 2005
+  #  flow.permanence.2003.sim=flow.permanence.yr2003.sim,                           # Write the obs and sim flow permanences
+  #  flow.permanence.2005.sim=flow.permanence.yr2005.sim,flow.permanence.2003=flow.permanence.yr2003,                      # Write the obs and sim flow permanences
+  #  flow.permanence.2005=flow.permanence.yr2005) #best.percent.exceeded = best.percent.threshold,                                                                          # Write the obs and sim flow permanences
+  
+  # Compile everything as a list
+  out.headwater.evaluation <- list(                                       # Compile a list of everything we want to output
+    flow.thresh.best.results=flow.thresh.best.results, # stats.on.off=stats.on.off,
+    thresh.best=thresh.best, #best.percent.thresh=best.percent.thresh,
+    total.network.on.off=total.network.on.off,
+    flow.network.thresh=flow.network.thresh, percent.on.network=percent.on.network, 
+    save.out.thresh.best= save.out.thresh.best,
+    best.residual.on.off=best.residual.on.off,
+    Q.sub.c.best=Q.sub.c.best
+  )                                                                                      # Continued
+  
+  return(out.headwater.evaluation)                                                 # return the list and exit the function
 }
