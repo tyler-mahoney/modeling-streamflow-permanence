@@ -1,0 +1,775 @@
+---
+title: "Run Modular Dynatopmodel"
+output: html_notebook
+---
+
+# Step 1: Read in required libraries
+
+```{r}
+library(dynatopmodel)
+library(sp)
+library(raster)
+library(reticulate)
+library(topmodel)
+library(ggplot2)
+library(mapview)
+library(hydroPSO)                                               # Read in hydroPSO algorithm
+library(hydroGOF)                                               # Read in hydroGOF package (goodness of fit)
+library(hydroTSM)                                               # Read in hydroTSM package
+library(boot)                                                   # Read in boot package
+library(zoo)                                                    # Read in zoo package for time series analysis 
+library(sensitivity)                                            # Read in the sensitivity analysis package
+library(xts)                                                    # Read in the xts package also for time series 
+library(ggplot2)                                                # Read in ggplot2 package for figure 
+library(dplyr)                                                  # Read in dplyr package
+library(readr)                                                  # Read in read r package
+library(lubridate)                                              # Read in lubridate for date manipulation
+library(Evapotranspiration)                                     # Read in the Evapotranspiration packahge 
+library(rasterVis)                                              # Read in the rasterVis package for raster 
+library(dismo)                                                  # Read in dismo package for k fold cross
+library(rgl)                                                    # Read in the rgl package for 3D scatter plots
+library(matrixStats)                                            # Read in the library for matrixStats
+library(gridExtra)                                              # Read in the gridExtra package for GGPLOT2
+library(tidyquant)
+
+```
+
+# Step 2: Load in Spatial Data 
+Note, this should be saved from the 'run-modular-discretization.Rmd' Notebook 
+
+```{r}
+# Read in the Spatial data 
+#read.spatial <- readRDS('SpatialInputData/dynatop_spatial_LM.RData')
+read.spatial <- readRDS('SpatialInputData/dynatop_spatial_FR.RData')
+disc <- read.spatial$disc                                      
+RoutingTable <- read.spatial$RoutingTable                      
+explicit.reach.table <- read.spatial$explicit.ChanTable         
+
+```
+
+# Step 3: Read in the hydrometeorological data 
+Note, this should be saved from the 'run-modular-hydro-data.Rmd' Notebook. 
+Reminder: if any functions are used to develop the time series that are created within, they must be loaded prior to running the chunk. 
+
+```{r}
+# Read in the hydromet data
+read.hydromet <- readRDS('HydroInputData/dynatop_hydromet_FR_short.RData')
+
+input.timeseries <- read.hydromet$input.timeseries
+
+# Specify the Model Time Step (and internal time step)
+model.timestep <- read.hydromet$dt        #1  #2                                 # This should match the dt specified from run-modular-hydro-data
+in.timestep <- read.hydromet$dt           #1  #2                                 # Specify the number of internal time steps (unitless) - this is for the internal loop to calculate the baseflow
+
+# Specify Calibration Period
+warmup.initial <- read.hydromet$warmup.initial
+warmup.final <- read.hydromet$warmup.final
+
+calibration.initial <- read.hydromet$calibration.initial
+calibration.final <- read.hydromet$calibration.final
+
+# Note: it's important to format the timeseries in terms of UTC otherwise timesteps will be added (annoyingly)
+
+# Concatinate the dates
+dates.df <- data.frame(calibration.initial, calibration.final,  # Concatinate the dates into a df 
+                       warmup.initial, warmup.final)            # Continued
+names.dates <- c('calibration.initial','calibration.final',     # Create names for the df
+                 'warmup.initial','warmup.final')               # Continued
+names(dates.df) <- names.dates                                  # Specify the date names 
+
+# Specify the watershed area
+watershed.area <- sum(disc$groups$area)                         # Specify the watershed area (m^2)
+
+# Load in the data from the input timeseries from the run-modular-hydro-data file
+# Currently no validation period is specified 
+
+rain.calib <- input.timeseries$P[1:(length(input.timeseries$P))]                     # Writing the P TS to a variable
+PET.calib <- input.timeseries$PET[1:(length(input.timeseries$PET))]                  # Writing the PET TS to a variable
+Q.obs.calib <- input.timeseries$Qobs[1:(length(input.timeseries$Qobs))]              # Writing the Qobs TS to a variable
+dates.cal.warm <- time(rain.calib)  
+```
+
+# Step 4: Set up the parameter values and load in the functions to run the model
+```{r}
+
+source('run-modular-dynatopmodel-functions.R')
+
+# Set up the model parameters; Read in min and max values (these values should be based on the literature).
+v.of.min <- 10; v.of.max <- 150                                 # Overland flow velocity (m/hr) min and max
+m.min <- -9.908; m.max <- -2.813                                # Form of exponential decline in conductivity (m) min and max
+srz.max.min <-  .01; srz.max.max <- .75                         # Max root zone storage (m) min and max
+srz.0.min <- 0.5; srz.0.max <- 1                                # Initial root zone storage (fraction) min and max
+v.chan.min <- 500; v.chan.max <- 7000                           # Channel routing velocity (m/hr) min and max
+natlog.T0.min <- 3; natlog.T0.max <- 16                         # Lat saturated transmissivity (m^2/hr) min and max
+sd.max.min <- 0.2; sd.max.max <- 0.8                            # Max effective deficit of sat zone (m) min and max
+td.min <- 0.01; td.max <- 100                                   # Unsat zone time delay (hr/m) min and max
+mann.n.min <- 0.01; mann.n.max <- .15                           # Manning's (unitless) n min and max
+S0.min <- 0.01; S0.max <- 0.3                                   # Nominal slope (fraction) min and max
+CD.min <-  0.01; CD.max <- 0.5                                  # Capilary drive (unused) min and max
+k0.min <-  0.1; k0.max <- 1000                                  # Initial saturated hydraulic conductivity (m/hr; unused) min and max
+m1.min <- -9.908; m1.max <- -2.813                              # Assign range for the first m     
+m2.min <- -9.908; m2.max <- -2.813                              # Assign range for the second m
+m3.min <- -9.908; m3.max <- -2.813                              # Assign range for the third m 
+
+# Concatinate parameter minmum, maximum, and names. Assign names to vectors
+lower <- c(v.of.min, m.min, srz.max.min, srz.0.min, v.chan.min, # Vector of lower parametr values
+           natlog.T0.min, sd.max.min, td.min,                   # Will be used to generate parameter sets 
+           mann.n.min, S0.min, CD.min, k0.min,                  # Continued
+           m1.min, m2.min, m3.min)                              # During calibration
+
+upper <- c(v.of.max, m.max, srz.max.max, srz.0.max, v.chan.max, # Vector of upper parameter values
+           natlog.T0.max, sd.max.max, td.max,                   # Will be used to generate parmeter sets 
+           mann.n.max, S0.max, CD.max, k0.max,                  # Continued 
+           m1.max, m2.max, m3.max)                              # During Calibration 
+
+name.params <- c('v.of', 'm','srz.max','srz.0',                 # Create names of all parameters
+                 'v.chan','natlog.T0','sd.max',                 # Included in Dynatopmodel
+                 'td','mann.n','S0','CD','k0',                  # Continued
+                 'm1','m2','m3')                                # To be implemented within the uncertainty and calibration
+names(lower) <- name.params                                     # Specify names of columns for the lower part of the parameter space
+names(upper) <- name.params                                     # Specify names of columns for the upper part of the parameter space
+
+params <- lower+(upper-lower)/2                                 # Unused - but for a test run of the model
+
+params.best.FC4 <- c(0.978,-6.75, 0.679,0.981,500,5.76,.606,1.58,0.0376,.181,.136,.0693,-9.91,-3.22,-2.81)
+
+```
+
+# Step 5: Run the model with random values and the optimal parameterziation from the previous model
+
+Note: I'm not expecting for the calibration statistics for either model to be particularly good initially since this is a different spatial parameterization... but we'll see. 
+
+```{r}
+
+
+# Run a test of the model to make sure that things look good before running the PSO calibration 
+result.test <- runPSOCalibrationTopmodel(param.values=params,                      # TEST - Run the model with the optimal parameter set
+                                         inner.timesteps = in.timestep,            # input the inner.timesteps
+                                         rains = rain.calib, PETs=PET.calib,       # All forcing components are the same
+                                         obss=Q.obs.calib, discs=disc,          # Spatial information comes from the dynatop spatial function
+                                         RoutingTables=NULL,                       # See above
+                                         dates.dfs = dates.df)                     # Calibration end date input
+result.test.FC4 <- runPSOCalibrationTopmodel(param.values=params.best.FC4,                      # TEST - Run the model with the optimal parameter set
+                                             inner.timesteps = in.timestep,            # input the inner.timesteps
+                                             rains = rain.calib, PETs=PET.calib,       # All forcing components are the same
+                                             obss=Q.obs.calib, discs=disc,          # Spatial information comes from the dynatop spatial function
+                                             RoutingTables=NULL,                       # See above
+                                             dates.dfs = dates.df)                     # Calibration end date input
+
+out.test <- data.frame(sim=result.test.FC4$sim,obs=result.test.FC4$run$qobs)
+#write.csv(out.test,'out-test-LM.csv')
+```
+
+# Step 6: Calibrate the model for discharge at the outlet of the watershed
+```{r}
+source('run-modular-dynatopmodel-functions.R')
+
+# Define the directory where the data will be saved to. 
+model.drty <- 'D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2'
+
+# Create a file for the figures to be pasted if it is needed.
+Figures.drty.out <- paste0(model.drty, "/Figures")                                 # Create directroy to store the figures for the calibration
+if (!file.exists(Figures.drty.out)) dir.create(Figures.drty.out,                   # Creates a figure directory
+                                               recursive=TRUE)                     # If the output directory selected to store the figures does not exists, it is created:
+
+# Parameterize the routing table for the model
+RoutingTables <- NULL                                                              # Note: as of now since FR is so small, I am assuming that the routing table is null, meaning that there is no attenuation really. This assumption is okay for now given the small size of the catchment.
+RoutingTable <- NULL                                                               # Note: as of now since FR is so small, I am assuming that the routing table is null, meaning that there is no attenuation really. This assumption is okay for now given the small size of the catchment.
+
+# Run the PSO calibration procedure: Note we were having issues running the model with the model.FUN.args as the method to read the arguments. 
+# NOTE: Now we run the hydroPSO algorithm with the model arguments as 'global' variables.
+out <- hydroPSO(fn="hydromodInR",                               # This is an optional, but necessary specification that the calibration approach is a 'hydromod' with a model as an outside function
+                lower=lower,                                    # Input the lower parameter range
+                upper=upper,                                    # Input the upper parameter range
+                method="spso2011",                              # Specify the algorithm to calibrate the model
+                control=list(write2disk=TRUE, MinMax="max",     # These are the parameters for the HydroPSO calibration approach
+                             npart=25, maxit=10, normalise=TRUE,# npart=10, maxit=8, # See the documentation for each of these items # Before i had at npart = 80 and maxit =25; the typical runs were 50 npart * 5 iter # before 12/1/2022 npart = 55, maxit = 9, report =9. I needed to cut this down for time. 
+                             REPORT=8, parallel="none",        # The model can either be run a certain number of iterations or it can reach a cut off threshold
+                             reltol=1E-10),                     # There are also coefficients for how widely the search space is and another coefficient to control how quickly convergence occurs (Not shown, these are currently defaults)
+                model.FUN="Dynatophydromod",                    # This is the function that calls dynatop
+                model.FUN.args= list(obs = Q.obs.calib,                            # Timeseries of observed Q data to compare the simulated results #inner.timestep=in.timestep,            # Number of inner timesteps
+                                     inner.timestep = in.timestep,                 # Inner timestep
+                                     rain = rain.calib,                            # Timeseries of precipitation at dt to run the model 
+                                     PET = PET.calib,                              # Timeseries of PET at dt needed to run the model 
+                                     disc = disc,                               # Spatial discretization (weighting matrix) and 'groups' parameter matrix 
+                                     RoutingTable = NULL,                          # Routing table to discretize stream network
+                                     date = dates.cal.warm,                        # Vector of dates for the calibration period
+                                     dates.df = dates.df,                          # Date frame of dates used for warm up and calibration periods
+                                     model.drty=model.drty),                       # Input the model directory                              
+                obs = Q.obs.calib,                              # Note above we're the model.FUN.args wasn't working properly, so we're adding this back in as variables that will feed into the model
+                inner.timestep = in.timestep,                   # Inner timestep   
+                rain = rain.calib,                              # Timeseries of precipitation at dt to run the model 
+                PET = PET.calib,                                # Timeseries of PET at dt needed to run the model
+                disc = disc,                                 # Spatial discretization (weighting matrix) and 'groups' parameter matrix 
+                RoutingTable = NULL,                            # Routing table to discretize stream network
+                date = dates.cal.warm,                          # Array of dates for each time step
+                dates.df = dates.df,                            # Date frame of dates used for warm up and calibration periods
+                model.drty = model.drty,                        # Model directory    
+                # Date frame of dates used for warm up and calibration periods       
+)
+
+
+saveRDS(out,'D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2/dynatop_calib_FR.RData')
+```
+# Step 7: Conduct post-processing to route the water thruough the stream network. 
+
+```{r}
+
+PSO.directory <- paste0(getwd(),"/PSO.out/")                                 # Specify the directory where all of the PSO files are written to
+res <- read_results(drty.out=PSO.directory, MinMax="max",            # Read the results of the calibration; MAX is noting that we are looking for maximum KGE vals
+                    beh.thr=0.3,modelout.cols=NULL)                  # 0.3 is the threshold for specifying behavioral model realizations
+
+params <- res[["params"]]                                       # Record the optimal parameters from the results
+gofs <- res[["gofs"]]                                           # Read the goodness of fit values
+Qsims <- res[["model.values"]]                                  # Model values for the simulations
+model.best <- res[["model.best"]]                               # Read the best model results
+model.obs <- res[["model.obs"]]                                 # Outputthe observed results 
+
+model.params <- data.frame(params)
+model.params$gofs <- gofs
+
+x11()
+plot(x=1:length(model.best),y=model.best,type='l')
+lines(x=1:length(model.obs),y=model.obs,type='l',col='red')
+
+read.out.calib <- readRDS('D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2/dynatop_calib_FR.RData')
+
+optim.params <- as.numeric(model.params[1,-length(model.params)])
+#optim.params <- read.out.calib$par                                                            # Read the optimal parameter set
+names(optim.params) <- names(params)                                               # Set names 
+result.optim <- runPSOCalibrationTopmodel(param.values=optim.params,               # Run the model with the optimal parameter set
+                                          inner.timesteps = in.timestep,           # input the inner.timesteps
+                                          rains = rain.calib, PETs=PET.calib,      # All forcing components are the same
+                                          obss=Q.obs.calib, discs=disc,            # Spatial information comes from dynatop spatial function
+                                          RoutingTables=NULL,                      # See above
+                                          dates.dfs = dates.df)                    # Calibration end date input
+sim.zoo <- (window(result.optim$run$qsim, start = dates.df$calibration.initial,         # window the simulation
+                         end = dates.df$calibration.final))                        # Will convert to zoo obj later
+obs.zoo <- (window(result.optim$run$qobs, start = dates.df$calibration.initial,              # Window the observed
+                  end = dates.df$calibration.final))                               # Will convert to zoo obj later
+out.routing <- explicit.routing.instant(read.spatial=read.spatial,explicit.reach.table=explicit.reach.table,run=result.optim$run,model.timestep=model.timestep)
+
+
+```
+# Step 8: Run the post-processing code to estimate the subsurface transmissivity that best predicts the flow state in our three reaches 
+
+```{r}
+model.drty <- 'D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2'
+
+TS.logger.clean.all <- read.hydromet$TS.logger.clean.all
+
+TS.zoo.all <- read.hydromet$TS.zoo.all
+
+reach.identifiers <- read.hydromet$reach.loggers$Reach
+
+time.sim <- time(Q.obs.calib)
+
+#test.HW.eval <- Headwater.evaluation.dynamic(model.drty,qin.file, read.spatial, TS.logger.clean.all, TS.zoo.all, reach.identifiers, model.timestep, time.sim)
+
+
+# Set the directory NOTE: USER MUST CHANGE THE FOLDER FOR WHATEVER CALIBRATION TEST WE ARE ON, AS OF 8/14/2023 THIS IS D:\Data\Dynamic-TOPMODEL\Little-Millseat\Calibration-2
+qin.files.dir <- 'D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2/fluxes_stores/'
+qin.files <- list.files(qin.files.dir,pattern="fluxqin")        # Read in all the files with the 'fluxqin' name
+
+headwater.postprocess <- c()                                    # Initialize the postprocessing vector 
+
+# Run the post processing code (Headwater.evaluation) for the behavioral parameter sets - note the code will look at the KGE value and only run the instream routing and headwater evaluation functions of the realization is behavioral
+for (qin.file in 1:length(qin.files)) {                         # Iterate over every behavioral parmeter set
+  print(qin.file)                                               # Pring the qin.file number 
+  print(Sys.time())
+  headwater.postprocess[[qin.file]] <-                          # Run the Headwater.evaluation function for each behavioral parameter set
+    Headwater.evaluation.dynamic(model.drty,qin.file,read.spatial,                   # Inputs: qin.file and FR.Spatial configuration
+                         TS.logger.clean.all=TS.logger.clean.all,TS.zoo.all=TS.zoo.all, 
+                         reach.identifiers=reach.identifiers,
+                         model.timestep=model.timestep,
+                         time.sim=time.sim)                    # Also the percent that the logger data is 'wet'
+}
+
+#kge.behavioral <- ifelse(kge.in>=0.3,1,0) 
+
+#headwater.postprocess.behavioral <- headwater.postprocess[which(kge.behavioral==1)]
+
+# Note the output will include an entry for every realization, but only those with behavioral KGE scores will have data. Remove those old simulations 
+
+headwater.postprocess.behavioral <- headwater.postprocess[!is.na(headwater.postprocess)]
+
+```
+
+# Step 9: Begin plotting
+```{r}
+read.out.calib <- readRDS('D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2/dynatop_calib_FR.RData')
+
+optim.params <- read.out.calib$par                                                            # Read the optimal parameter set
+names(optim.params) <- names(params)                                               # Set names 
+result.optim <- runPSOCalibrationTopmodel(param.values=optim.params,               # Run the model with the optimal parameter set
+                                          inner.timesteps = in.timestep,           # input the inner.timesteps
+                                          rains = rain.calib, PETs=PET.calib,      # All forcing components are the same
+                                          obss=Q.obs.calib, discs=disc,            # Spatial information comes from dynatop spatial function
+                                          RoutingTables=NULL,                      # See above
+                                          dates.dfs = dates.df)                    # Calibration end date input
+sim.zoo <- (window(result.optim$run$qsim, start = dates.df$calibration.initial,         # window the simulation
+                         end = dates.df$calibration.final))                        # Will convert to zoo obj later
+obs.zoo <- (window(result.optim$run$qobs, start = dates.df$calibration.initial,              # Window the observed
+                  end = dates.df$calibration.final))                               # Will convert to zoo obj later
+
+
+
+plot(sim.zoo)
+lines(obs.zoo,col='red')
+
+
+PSO.drty <- "/PSO.out/"                             # Specify the directory where all of the PSO files are written to
+res <- read_results( MinMax="max",            # Read the results of the calibration; MAX is noting that we are looking for maximum KGE vals
+                    beh.thr=0.3,modelout.cols=NULL)             # 0.3 is the threshold for specifying behavioral model realizations
+params <- res[["params"]]                                       # Record the optimal parameters from the results
+gofs <- res[["gofs"]]                                           # Read the goodness of fit values
+Qsims <- res[["model.values"]]                                  # Model values for the simulations
+model.best <- res[["model.best"]]                               # Read the best model results
+model.obs <- res[["model.obs"]]                                 # Outputthe observed results 
+optim.params <- data.frame(t(res$best.param))                   # Transpose the data and write as dataframe to be read in by the model                                                                   # print stats
+
+## Process Quantiles of the model results 
+params.025.50.975 <- wquantile(params, weights=gofs,            # Determine the weighted quantiles based on the gofs
+                               byrow=FALSE,                     # Specifying wquanitle inputs
+                               probs=c(0.025, 0.5, 0.975),      # probabilities to be calculated
+                               normwt=TRUE, verbose=FALSE)      # Other inputs
+params.025.50.best.975 <- cbind(params.025.50.975[, c(1,2)],    # Cbind to determine how far past the median
+                                Best=as.numeric(optim.params[[1]]),                # This is realated to the beset parameters
+                                params.025.50.975[, 3] )        # Which column is needed 
+colnames(params.025.50.best.975)[4] <- "97.5%"                  # Column names
+round( params.025.50.best.975, 2)                               # Rounding the parameters - for viewing
+n <- ncol(Qsims)                                                # number of time steps
+Qsim.025.q50.q975 <- wquantile(Qsims, weights=gofs, byrow=FALSE,# This is based on the Qsims this time 
+                               probs=c(0.025, 0.5, 0.975),      # This is the quantiles that will be calculated
+                               normwt=TRUE, verbose=FALSE)      # It's normalized
+#round( head(Qsim.025.q50.q975), 3)                              # Prints the quantiles Qsim
+
+dates.cal <- time(sim.zoo)
+q025 <- zoo(Qsim.025.q50.q975[,1], dates.cal)                   # Transform the 2.5 quantiles to zoo
+q975 <- zoo(Qsim.025.q50.q975[,3], dates.cal)                   # Transform the 97.5 quantile to zoo
+
+pf <- pfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the P factor
+pf                                                              # Print the P factor
+rf <- rfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the R factor
+rf                                                              # Print the R factor 
+
+# Convert from m/hr (the output of dynatopmmodel) to mm/day: 1 m / 1 hr * 1000 mm / 1 m * 24 hr / 1 day
+sim.plot <- sim.zoo*24000
+colnames(sim.plot) <- 'sim'
+obs.plot <- obs.zoo*24000
+colnames(obs.plot) <- 'obs'
+lower.plot <- q025*24000
+upper.plot <- q975*24000
+
+test.date <- as.POSIXct(dates.cal,format='%Y-%m-%d %H:%M%S')
+
+obs.minus.sim.plot <- obs.plot-sim.plot
+colnames(obs.minus.sim.plot) <- 'obs.minus.sim.plot'
+outlet.sim.obs <- data.frame(time=test.date,'sim'=sim.plot,'obs'=obs.plot,
+                             'lower'=lower.plot,'upper'=upper.plot,'obs.minus.sim'=obs.minus.sim.plot) # This code converts everything from m/hr to mm/day
+
+sim.obs.outlet.plot <- ggplot(data=(outlet.sim.obs),aes(x=time,y=sim)) +theme(legend.position = "none") +geom_ribbon(data=outlet.sim.obs,aes(ymin=lower,ymax=upper),fill='grey70') +
+  theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0) + geom_line(data=outlet.sim.obs,aes(x=time,y=sim),color='black',size=.55)+geom_line(data=outlet.sim.obs,aes(y=obs),color='red',linetype='solid') #+ scale_x_date(date_breaks = '6 months') 
+sim.obs.outlet.plot <-  sim.obs.outlet.plot + theme(axis.title.x=element_blank())
+x11()
+sim.obs.outlet.plot
+
+sim.obs.window <- outlet.sim.obs[which(outlet.sim.obs$time==ymd_hms("2004-09-01 00:00:00")):which(outlet.sim.obs$time==ymd_hms("2004-11-01 00:00:00")),]   
+
+sim.obs.outlet.plot.2 <- ggplot(data=sim.obs.window,aes(x=time,y=sim))+geom_ribbon(data=sim.obs.window,aes(ymin=lower,ymax=upper),fill='grey70')+geom_line(data=sim.obs.window,aes(x=time,y=obs),color='red',linetype='solid') +theme(legend.position = "none")
+sim.obs.outlet.plot.2 <- sim.obs.outlet.plot.2+geom_line(color='black',size=.55)+ theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0)
+sim.obs.outlet.plot.2 <-  sim.obs.outlet.plot.2 + theme(axis.title.x=element_blank())
+sim.obs.outlet.plot.2
+
+plot(sim.obs.window$sim)
+```
+
+# Step 10: Post processing and continue plotting 
+```{r}
+
+
+qin.files <- matrix(nrow=length(headwater.postprocess.behavioral),ncol=1)
+
+# Ouput a vector of the optimal flow theshold for each run 
+optimal.flow.thresh <- data.frame(matrix(nrow=length(qin.files),ncol=1)) # data.frame(matrix(nrow=length(qin.files),ncol=1))
+
+for (iter.postprocess in 1:length(qin.files)) {
+  optimal.flow.thresh[iter.postprocess,1] <- headwater.postprocess.behavioral[[iter.postprocess]]$thresh.best       # This is the optimal transmissivity that was calibrated. m^3/hr
+}
+optimal.flow.thresh.mm.day <- optimal.flow.thresh
+colnames(optimal.flow.thresh.mm.day) <- 'flow.thresh'
+
+# Output a matrix of the percent correct for each optimal threshold for each FC sensor will be size  4 x number of behavioural parameter sets - #Run 105 is the optimal run for FC4
+percent.correct.state.FC <- data.frame(matrix(nrow=length(qin.files),ncol=length(reach.identifiers)))
+
+for (iter.postprocess in 1:length(qin.files)) { 
+  for (Reach.id in 1:length(reach.identifiers)) {
+    percent.correct.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$percent.correct[which(headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
+     }
+  }
+
+colnames(percent.correct.state.FC) <- reach.identifiers
+
+# Output a vector of the total error for each optimal threshold
+total.error.state.FC <- data.frame(matrix(nrow=length(qin.files),ncol=length(reach.identifiers)))
+
+kge.out.behavioral <- data.frame(matrix(nrow=length(qin.files),ncol=1))
+
+for (iter.postprocess in 1:length(qin.files)) {
+  kge.out.behavioral[iter.postprocess,1] <- headwater.postprocess.behavioral[[iter.postprocess]]$kge$x
+  
+}
+
+percent.correct.state.FC$kge <- kge.out.behavioral[,1]
+
+for (iter.postprocess in 1:length(qin.files)) { 
+  for (Reach.id in 1:length(reach.identifiers)) {
+    total.error.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$sum.incorrect[which(headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
+  }
+}
+
+# output a vector of the total correct for each optimal threshold
+total.correct.state.FC <- data.frame(matrix(nrow=length(qin.files),ncol=length(reach.identifiers)))
+
+for (iter.postprocess in 1:length(qin.files)) {
+  for (Reach.id in 1:length(reach.identifiers)) {
+    total.correct.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$sum.correct[which(headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
+  }
+}
+
+Q.sub.c.reaches.all <- (matrix(ncol=length(qin.files),nrow=length(read.spatial$explicit.ChanTable[,1])))
+for (iter.postprocess in 1:length(qin.files)) {
+  Q.sub.c.reaches.all[,iter.postprocess] <- headwater.postprocess.behavioral[[iter.postprocess]]$Q.sub.c.best
+}
+Q.sub.c.mean <- rowMeans(Q.sub.c.reaches.all)
+Q.sub.c.stdev <- rowSds(Q.sub.c.reaches.all)
+
+# Calculate the total percent correct for the entire study period over all of the FC sensors
+total.percent.correct.FC <- data.frame(sum.correct=rowSums(total.correct.state.FC),sum.incorrect=rowSums(total.error.state.FC))
+total.percent.correct.FC$percent.correct <- total.percent.correct.FC$sum.correct/(total.percent.correct.FC$sum.correct+total.percent.correct.FC$sum.incorrect)*100
+
+# Output for each behavioural parameter set the percentage that each reach is on 
+network.percent.on <- (matrix(nrow=length(read.spatial$explicit.ChanTable$link_no),ncol=length(qin.files)))
+
+for (iter.postprocess in 1:length(qin.files)) {
+  network.percent.on[,iter.postprocess] <- headwater.postprocess.behavioral[[iter.postprocess]]$percent.on.network[,1]
+}
+
+network.percent.on.df <- data.frame(network.percent.on)
+rownames(network.percent.on.df) <- paste0('R',read.spatial$explicit.ChanTable$link_no)
+
+# Calculate the mean and standard deviation of the percent on 
+network.percent.on.stats <- data.frame(mean=rowMeans(network.percent.on))
+network.percent.on.stats$stdev <-rowSds((network.percent.on))
+network.percent.on.stats$var <- rowVars(network.percent.on)
+
+# Output for each time series with which the flow is on and off as a list 
+simulated.network.flow <- list()
+
+for (iter.postprocess in 1:length(qin.files)) {
+  simulated.network.flow[[iter.postprocess]] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.network.thresh # tHIS IS IN M^3/HR
+}
+
+# determine the total network length for each time step by: multiplying the on/off state of the reach by the reach length, then doing a row sum.
+# Record the network length at each timestep
+reach.length.m <- read.spatial$explicit.ChanTable$stream_length_ft*0.3048
+network.length.postprocess <- matrix(nrow=nrow(result.optim$run$fluxes$qbf),ncol=length(qin.files))
+for (iter.postprocess in 1:length(qin.files)) { 
+  network.length.postprocess[,iter.postprocess] <- rowSums(sweep(headwater.postprocess.behavioral[[iter.postprocess]]$total.network.on.off,MARGIN=2,reach.length.m,`*`))
+}
+
+row.names(network.length.postprocess) <- time(Q.obs.calib)
+
+network.length.total.fig <- (headwater.postprocess.behavioral[[18]]$total.network.on.off[1:nrow(network.length.postprocess),])
+
+
+row.names(network.length.total.fig) <- time(Q.obs.calib)
+#rownames(network.length.total) <- seq(1,12504)
+
+# Convert from m/hr (the output of dynatopmmodel) to mm/day: 1 m / 1 hr * 1000 mm / 1 m * 24 hr / 1 day
+sim.plot <- sim.zoo*24000
+colnames(sim.plot) <- 'sim'
+obs.plot <- obs.zoo*24000
+colnames(obs.plot) <- 'obs'
+lower.plot <- q025*24000
+upper.plot <- q975*24000
+
+
+mean.network.length <- rowMeans(network.length.postprocess)
+mean.network.length.df <- data.frame(length=mean.network.length,time=time.sim)
+median.network.length <- rowMedians(network.length.postprocess)
+sd.network.length <- rowSds(network.length.postprocess)
+sd.network.length.min <- mean.network.length-sd.network.length
+sd.network.length.max <- mean.network.length+sd.network.length
+plot.network.length <- data.frame(length=mean.network.length,time=time.sim,sd.min=sd.network.length.min,sd.max=sd.network.length.max)
+#network.length.start <- which(plot.network.length$time==time.sim)
+#plot.network.length <- plot.network.length[network.length.start:length(plot.network.length$length),]
+
+length.plot <- ggplot(data=plot.network.length,aes(x=time,y=length))+xlab('Date')+ylab('Mean network length (m)')
+#length.plot <- length.plot + geom_ma(ma_fun=SMA,n=36, linetype='solid') 
+length.plot <- length.plot + geom_ribbon(data=plot.network.length, aes(ymin=sd.min,ymax=sd.max),fill='grey')+theme_bw()+
+  geom_ma(ma_fun=SMA,n=12, linetype='solid') 
+
+plot.network.percent <- data.frame(percent=100*plot.network.length$length/sum(read.spatial$explicit.ChanTable$stream_length_ft*0.3048),
+                                   time=as.Date(plot.network.length$time),
+                                   sd.min.percent=100*plot.network.length$sd.min/sum(read.spatial$explicit.ChanTable$stream_length_ft*0.3048),
+                                   sd.max.percent=100*plot.network.length$sd.max/sum(read.spatial$explicit.ChanTable$stream_length_ft*0.3048))
+percent.length.plot=ggplot(data=plot.network.percent,aes(x=time,y=percent))+xlab('Date') + ylab('Mean Percent Flowing (%)') +
+  geom_ribbon(data=plot.network.percent,aes(ymin=sd.min.percent,ymax=sd.max.percent),fill='grey') +
+  geom_ma(ma_fun=SMA,n=12,linetype='solid',size=1.05,color='black') + ylim(40,99) + theme_bw() +
+  scale_x_date(date_breaks = '6 months') + theme(axis.title.x=element_blank())
+
+ggplot(data=plot.network.percent, aes(x=percent)) + geom_histogram(binwidth=.9,colour = 'black', fill = 'white') + theme_classic()
+
+
+
+percent.length.discharge <- data.frame(date=plot.network.percent$time,percent=plot.network.percent$percent,discharge=result.optim$sim)
+
+#roll.mean.network <- rollmean(zoo(plot.network.length$length),k=36,align='center')
+#length.plot.2 <- length.plot+geom_line(data=roll.mean.network,aes(y=length))
+gsim.obs.outlet.plot <- ggplotGrob(sim.obs.outlet.plot)
+gpercent.length.plot <- ggplotGrob(percent.length.plot)
+maxWidth = grid::unit.pmax(gsim.obs.outlet.plot$widths[2:5],gpercent.length.plot$widths[2:5])
+gsim.obs.outlet.plot$widths[2:5] <- as.list(maxWidth)
+gpercent.length.plot$widths[2:5] <- as.list(maxWidth)
+options(scipen=10000)
+x11()
+grid.arrange(gsim.obs.outlet.plot,gpercent.length.plot,ncol=1)
+
+start.ts <- which(plot.network.length$time==time(sim.plot[1]))
+
+length.reduced <- plot.network.length[start.ts:(start.ts+length(sim.plot)-1),]
+
+q.vs.length <- data.frame(Q.sim=sim.plot,length = length.reduced$length,time=length.reduced$time)
+View(q.vs.length)
+q.vs.length.plot <- ggplot(data=q.vs.length,aes(x=sim,y=length/1000))+geom_point()+scale_x_log10()+scale_y_log10()+ylab('Flowing Stream Length (km)')+
+  xlab('Discharge (mm/day)')+theme_bw()+theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank())
+q.vs.length.plot
+
+length(q.vs.length$Q.sim[q.vs.length$sim>2])
+q.vs.length.2 <- q.vs.length[q.vs.length$sim<1,]
+q.vs.length.3 <- q.vs.length[q.vs.length$sim>=1,]
+q.vs.length$class <-ifelse(q.vs.length$sim>1,'High Flow','Low Flow')
+
+h.l.plot <- ggplot() + geom_point(data=q.vs.length.2,aes(x=sim,y=length/1000),color='black') +
+  geom_point(data=q.vs.length.3,aes(x=sim,y=length/1000,color='grey')) + scale_x_log10()+
+  scale_y_log10()+geom_smooth()
+h.l.plot
+
+h.l.plot.low <- ggplot(data=q.vs.length,aes(x=sim,y=length/1000)) +geom_point()+ geom_smooth(aes(color=class),method=lm,fullrange=TRUE)+scale_x_log10()+
+  scale_y_log10(limits=c(2,6)) + scale_color_brewer(palette="Paired")+theme_bw() + ylab('Length (km')
+
+h.l.plot.low <- h.l.plot.low + labs(x='Discharge (mm/day)',y='Stream Length (km)')+theme(legend.position ='none')
+x11()
+h.l.plot.low
+x11()
+q.vs.length.plot
+
+kge.in.files <- list.files(path=qin.files.dir,pattern='gof_log_kge')
+# CHANGE THE 400 TO 1 LATER
+kge.in.files <- kge.in.files[1:length(qin.files)]
+qin.files <- qin.files[1:length(qin.files)]
+kge.in <- matrix(nrow=length(kge.in.files))
+for (kge.in.file in 1:length(kge.in.files)) {
+  raw.kge <- read.csv(paste0(qin.files.dir,'/gof_log_kge',kge.in.file,'.csv'))
+  kge.in[kge.in.file] <- raw.kge$x
+}
+
+
+#write.csv(q.vs.length,'qvslength.csv')
+#Create a function to generate a continuous color palette
+rbPal <- colorRampPalette(c('green','red'))
+
+# Create a data frame for the flow threshold, total percent correct, and the kge...
+kge.totalpercentcorrect.flowthresh <- data.frame(kge=percent.correct.state.FC$kge,total.percent.correct=total.percent.correct.FC$percent.correct,flow.thresh=optimal.flow.thresh.mm.day)
+
+# Assign colors to the data frame
+# based on the y values
+kge.totalpercentcorrect.flowthresh$color <- rbPal(10)[as.numeric(cut(kge.totalpercentcorrect.flowthresh$total.percent.correct,breaks = 10))]
+kge.totalpercentcorrect.flowthresh$color.thresh <- rbPal(10)[as.numeric(cut(kge.totalpercentcorrect.flowthresh$flow.thresh,breaks = 10))]
+
+# Plot the percent correct versus the kge 
+
+plot.1 <- ggplot(data=kge.totalpercentcorrect.flowthresh,
+                 aes(x=kge,y=total.percent.correct,color=(flow.thresh))) + geom_point() + xlab('KGE') + ylab('Total Percent Correct (%)') +
+  scale_colour_viridis_c() + labs(color='flow.thresh')
+plot.2 <- ggplot(data=kge.totalpercentcorrect.flowthresh,aes(x=kge,y=((flow.thresh)),color=(total.percent.correct))) + geom_point() + xlab('KGE') + ylab('Log (flow thresh [m^3/hr])') +
+  labs(color = 'Total Percent Correct (%)') + scale_color_viridis_c()
+x11()
+grid.arrange(plot.1,plot.2)
+
+plot(x=kge.totalpercentcorrect.flowthresh$kge,y=kge.totalpercentcorrect.flowthresh$total.percent.correct, col=kge.totalpercentcorrect.flowthresh$color.thresh, pch=16,
+     xlab='kge',ylab='total percent (%)')
+plot(y=kge.totalpercentcorrect.flowthresh$flow.thresh,x=kge.totalpercentcorrect.flowthresh$kge,col=kge.totalpercentcorrect.flowthresh$color, pch=16,
+     xlab='flow mm/day',ylab='kge')
+
+percent.correct.state.FC$kge <- kge.out.behavioral[,1]
+
+test.out <- percent.correct.state.FC[which(percent.correct.state.FC$kge>0.3),]
+
+test.on <- data.frame('on-off'=headwater.postprocess.behavioral[[61]]$total.network.on.off$R520)
+
+test.on$Date <- time(Q.obs.calib)
+
+logger.test <- data.frame(state=TS.zoo.all[[2]],
+                                           Date=TS.logger.clean.all[[2]]$Date)                  # Get the logger time series
+    
+    
+    
+    sim.obs.match <- left_join(logger.test,test.on,by='Date')                     
+
+    # TYLER YOU WILL NEED TO CHANGE THE REACH NAMES BELOW DON'T FORGET 8/23/2023
+    
+kge.in <- data.frame(kge=percent.correct.state.FC$kge)
+    # Create a data frame for the flow threshold, FC1 percent correct, and the kge and plot
+kge.FC1percentcorrect.flowthresh <- data.frame(kge=kge.in,FC1.percent.correct=percent.correct.state.FC$`3722`,flow.thresh=(optimal.flow.thresh.mm.day))
+kge.FC1percentcorrect.flowthresh$color <- rbPal(10)[as.numeric(cut(kge.FC1percentcorrect.flowthresh$FC1.percent.correct,breaks = 10))]
+kge.FC1percentcorrect.flowthresh$color.thresh <- rbPal(10)[as.numeric(cut(kge.FC1percentcorrect.flowthresh$flow.thresh,breaks = 10))]
+plot(x=kge.FC1percentcorrect.flowthresh$kge,y=kge.FC1percentcorrect.flowthresh$FC1.percent.correct, col=kge.totalpercentcorrect.flowthresh$color)
+plot(x=kge.FC1percentcorrect.flowthresh$kge,y=kge.FC1percentcorrect.flowthresh$flow.thresh, col=kge.FC1percentcorrect.flowthresh$color)
+
+# Create a data frame for the flow threshold, FC2 percent correct, and the kge and plot
+kge.FC2percentcorrect.flowthresh <- data.frame(kge=kge.in,FC2.percent.correct=percent.correct.state.FC$`3242`,flow.thresh=(optimal.flow.thresh.mm.day))
+kge.FC2percentcorrect.flowthresh$color <- rbPal(10)[as.numeric(cut(kge.FC2percentcorrect.flowthresh$FC2.percent.correct,breaks = 10))]
+kge.FC2percentcorrect.flowthresh$color.thresh <- rbPal(10)[as.numeric(cut(kge.FC2percentcorrect.flowthresh$flow.thresh,breaks = 10))]
+plot(x=kge.FC2percentcorrect.flowthresh$kge,y=kge.FC2percentcorrect.flowthresh$FC2.percent.correct, col=kge.totalpercentcorrect.flowthresh$color, pch=16)
+plot(x=kge.FC2percentcorrect.flowthresh$kge,y=kge.FC2percentcorrect.flowthresh$flow.thresh, col=kge.FC2percentcorrect.flowthresh$color, pch=16)
+
+# Create a data frame for the flow threshold, FC2 percent correct, and the kge and plot
+kge.FC3percentcorrect.flowthresh <- data.frame(kge=kge.in,FC3.percent.correct=percent.correct.state.FC$`2538`,flow.thresh=(optimal.flow.thresh.mm.day))
+kge.FC3percentcorrect.flowthresh$color <- rbPal(10)[as.numeric(cut(kge.FC3percentcorrect.flowthresh$FC3.percent.correct,breaks = 10))]
+kge.FC3percentcorrect.flowthresh$color.thresh <- rbPal(10)[as.numeric(cut(kge.FC3percentcorrect.flowthresh$flow.thresh,breaks = 10))]
+plot(x=kge.FC3percentcorrect.flowthresh$kge,y=kge.FC3percentcorrect.flowthresh$FC3.percent.correct, col=kge.totalpercentcorrect.flowthresh$color, pch=16)
+plot(x=kge.FC3percentcorrect.flowthresh$kge,y=kge.FC3percentcorrect.flowthresh$flow.thresh, col=kge.FC3percentcorrect.flowthresh$color, pch=16)
+
+# Create a data frame for the flow threshold, FC4 percent correct, and the kge and plot
+kge.FC4percentcorrect.flowthresh <- data.frame(kge=kge.in,FC4.percent.correct=percent.correct.state.FC$`810`,flow.thresh=(optimal.flow.thresh.mm.day))
+kge.FC4percentcorrect.flowthresh$color <- rbPal(10)[as.numeric(cut(kge.FC4percentcorrect.flowthresh$FC4.percent.correct,breaks = 10))]
+kge.FC4percentcorrect.flowthresh$color.thresh <- rbPal(10)[as.numeric(cut(kge.FC4percentcorrect.flowthresh$flow.thresh,breaks = 10))]
+plot(x=kge.FC4percentcorrect.flowthresh$kge,y=kge.FC4percentcorrect.flowthresh$FC4.percent.correct, col=kge.totalpercentcorrect.flowthresh$color, pch=16)
+plot(x=kge.FC4percentcorrect.flowthresh$kge,y=kge.FC4percentcorrect.flowthresh$flow.thresh, col=kge.FC4percentcorrect.flowthresh$color, pch=16)
+
+plot.fc1 <- ggplot(data=kge.FC1percentcorrect.flowthresh,aes(x=kge,y=FC1.percent.correct,color=flow.thresh))+ geom_point() + xlab('KGE') + ylab('Percent Flow State Correct (%)') +scale_colour_viridis_c() + labs(color='Transmissivity (m^3/hr)') + ggtitle('(a) FC1') + ylim(60,100)+theme_bw()+theme(legend.position='none')+xlim(0.3,0.8)
+
+plot.fc2 <- ggplot(data=kge.FC2percentcorrect.flowthresh,aes(x=kge,y=FC2.percent.correct,color=flow.thresh))+ geom_point() + xlab('KGE') + ylab('Percent Flow State Correct (%)') +scale_colour_viridis_c() + labs(color='Transmissivity (m^3/hr)') + ggtitle('(b) FC2') + ylim(60,100)+theme_bw()+theme(legend.position='none')+xlim(0.3,0.8)
+
+plot.fc3 <- ggplot(data=kge.FC3percentcorrect.flowthresh,aes(x=kge,y=FC3.percent.correct,color=flow.thresh))+ geom_point() + xlab('KGE') + ylab('Percent Flow State Correct (%)') +scale_colour_viridis_c() + labs(color='Transmissivity (m^3/hr)') + ggtitle('(C) FC3') + ylim(60,100)+theme_bw()+theme(legend.position='none')+xlim(0.3,0.8)
+
+plot.fc4 <- ggplot(data=kge.FC4percentcorrect.flowthresh,aes(x=kge,y=FC4.percent.correct,color=flow.thresh))+ geom_point() + xlab('KGE') + ylab('Percent Flow State Correct (%)') +scale_colour_viridis_c() + labs(color='Transmissivity (m^3/hr)') + ggtitle('(d) FC4') + ylim(60,100)+theme_bw()+theme(legend.position='none')+xlim(0.3,0.8)
+
+x11()
+grid.arrange(plot.fc1,plot.fc2,plot.fc3,plot.fc4)
+plot.legend <- ggplot(data=kge.FC1percentcorrect.flowthresh,aes(x=kge,y=FC1.percent.correct,color=flow.thresh))+ geom_point() + xlab('KGE') + ylab('Total Percent Correct (%)') +scale_colour_viridis_c() + labs(color=bquote('Transmissivity ('~m^3~'/hr)')) + ggtitle('FC1') + ylim(95,100) 
+plot.legend
+
+
+on.vs.area <- data.frame(reach = read.spatial$explicit.ChanTable$link_no,upstream.area = read.spatial$explicit.ChanTable$US_area_m2,percent.on.avg = network.percent.on.stats$mean,
+           min.percent.on = (network.percent.on.stats$mean-network.percent.on.stats$stdev), max.percent.on = (network.percent.on.stats$mean+network.percent.on.stats$stdev),
+           best.percent.on=network.percent.on.df$X180)
+
+plot.on.vs.area <- ggplot(on.vs.area,aes(x=upstream.area/1000000,y=percent.on.avg*100)) + geom_point() + geom_errorbar(aes(ymin=min.percent.on*100,ymax=max.percent.on*100)) + scale_x_continuous(trans='log10') +
+  geom_point(aes(x=upstream.area/1000000,y=best.percent.on*100),colour='red') + xlab('Area (km2)') + ylab('Percent Surface Flow Present (%)') + theme_bw()
+
+```
+
+# Step 9: plot the data 
+
+```{r}
+x11()
+plot(x=1:25009,y=best.model$V2,type='l')
+lines(x=1:25009,y=as.numeric(test.obs),col='red')
+# Read the optimal parameter values and rerun the model                                
+read.out.calib <- readRDS('D:/Data/Dynamic-TOPMODEL/Falling-Rock/Calibration-2/dynatop_calib_FR.RData')
+
+optim.params <- read.out.calib$par                                                            # Read the optimal parameter set
+names(optim.params) <- names(params)                                               # Set names 
+result.optim <- runPSOCalibrationTopmodel(param.values=optim.params,               # Run the model with the optimal parameter set
+                                          inner.timesteps = in.timestep,           # input the inner.timesteps
+                                          rains = rain.calib, PETs=PET.calib,      # All forcing components are the same
+                                          obss=Q.obs.calib, discs=disc,            # Spatial information comes from dynatop spatial function
+                                          RoutingTables=NULL,                      # See above
+                                          dates.dfs = dates.df)                    # Calibration end date input
+sim.zoo <- (window(result.optim$run$qsim, start = dates.df$calibration.initial,         # window the simulation
+                         end = dates.df$calibration.final))                        # Will convert to zoo obj later
+obs.zoo <- (window(result.optim$run$qobs, start = dates.df$calibration.initial,              # Window the observed
+                  end = dates.df$calibration.final))                               # Will convert to zoo obj later
+
+
+
+plot(sim.zoo)
+lines(obs.zoo,col='red')
+
+
+PSO.drty <- "/PSO.out/"                             # Specify the directory where all of the PSO files are written to
+res <- read_results( MinMax="max",            # Read the results of the calibration; MAX is noting that we are looking for maximum KGE vals
+                    beh.thr=0.3,modelout.cols=NULL)             # 0.3 is the threshold for specifying behavioral model realizations
+params <- res[["params"]]                                       # Record the optimal parameters from the results
+gofs <- res[["gofs"]]                                           # Read the goodness of fit values
+Qsims <- res[["model.values"]]                                  # Model values for the simulations
+model.best <- res[["model.best"]]                               # Read the best model results
+model.obs <- res[["model.obs"]]                                 # Outputthe observed results 
+optim.params <- data.frame(t(res$best.param))                   # Transpose the data and write as dataframe to be read in by the model                                                                   # print stats
+
+## Process Quantiles of the model results 
+params.025.50.975 <- wquantile(params, weights=gofs,            # Determine the weighted quantiles based on the gofs
+                               byrow=FALSE,                     # Specifying wquanitle inputs
+                               probs=c(0.025, 0.5, 0.975),      # probabilities to be calculated
+                               normwt=TRUE, verbose=FALSE)      # Other inputs
+params.025.50.best.975 <- cbind(params.025.50.975[, c(1,2)],    # Cbind to determine how far past the median
+                                Best=as.numeric(optim.params[[1]]),                # This is realated to the beset parameters
+                                params.025.50.975[, 3] )        # Which column is needed 
+colnames(params.025.50.best.975)[4] <- "97.5%"                  # Column names
+round( params.025.50.best.975, 2)                               # Rounding the parameters - for viewing
+n <- ncol(Qsims)                                                # number of time steps
+Qsim.025.q50.q975 <- wquantile(Qsims, weights=gofs, byrow=FALSE,# This is based on the Qsims this time 
+                               probs=c(0.025, 0.5, 0.975),      # This is the quantiles that will be calculated
+                               normwt=TRUE, verbose=FALSE)      # It's normalized
+#round( head(Qsim.025.q50.q975), 3)                              # Prints the quantiles Qsim
+
+dates.cal <- time(sim.zoo)
+q025 <- zoo(Qsim.025.q50.q975[,1], dates.cal)                   # Transform the 2.5 quantiles to zoo
+q975 <- zoo(Qsim.025.q50.q975[,3], dates.cal)                   # Transform the 97.5 quantile to zoo
+
+pf <- pfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the P factor
+pf                                                              # Print the P factor
+rf <- rfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the R factor
+rf                                                              # Print the R factor 
+
+# Convert from m/hr (the output of dynatopmmodel) to mm/day: 1 m / 1 hr * 1000 mm / 1 m * 24 hr / 1 day
+sim.plot <- sim.zoo*24000
+colnames(sim.plot) <- 'sim'
+obs.plot <- obs.zoo*24000
+colnames(obs.plot) <- 'obs'
+lower.plot <- q025*24000
+upper.plot <- q975*24000
+
+test.date <- as.POSIXct(dates.cal,format='%Y-%m-%d %H:%M%S')
+
+obs.minus.sim.plot <- obs.plot-sim.plot
+colnames(obs.minus.sim.plot) <- 'obs.minus.sim.plot'
+outlet.sim.obs <- data.frame(time=test.date,'sim'=sim.plot,'obs'=obs.plot,
+                             'lower'=lower.plot,'upper'=upper.plot,'obs.minus.sim'=obs.minus.sim.plot) # This code converts everything from m/hr to mm/day
+
+sim.obs.outlet.plot <- ggplot(data=(outlet.sim.obs),aes(x=time,y=sim)) +theme(legend.position = "none") +geom_ribbon(data=outlet.sim.obs,aes(ymin=lower,ymax=upper),fill='grey70') +
+  theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0) + geom_line(data=outlet.sim.obs,aes(x=time,y=sim),color='black',size=.55)+geom_line(data=outlet.sim.obs,aes(y=obs),color='red',linetype='solid') #+ scale_x_date(date_breaks = '6 months') 
+sim.obs.outlet.plot <-  sim.obs.outlet.plot + theme(axis.title.x=element_blank())
+x11()
+sim.obs.outlet.plot
+
+sim.obs.window <- outlet.sim.obs[which(outlet.sim.obs$time==ymd_hms("2004-09-01 00:00:00")):which(outlet.sim.obs$time==ymd_hms("2004-11-01 00:00:00")),]   
+
+sim.obs.outlet.plot.2 <- ggplot(data=sim.obs.window,aes(x=time,y=sim))+geom_ribbon(data=sim.obs.window,aes(ymin=lower,ymax=upper),fill='grey70')+geom_line(data=sim.obs.window,aes(x=time,y=obs),color='red',linetype='solid') +theme(legend.position = "none")
+sim.obs.outlet.plot.2 <- sim.obs.outlet.plot.2+geom_line(color='black',size=.55)+ theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0)
+sim.obs.outlet.plot.2 <-  sim.obs.outlet.plot.2 + theme(axis.title.x=element_blank())
+sim.obs.outlet.plot.2
+
+plot(sim.obs.window$sim)
+```
+Okay good... the model works with the new spatial discretization. 
+
+Now on to the hydromet inputs... 
+
+```{r}
+
+```
+

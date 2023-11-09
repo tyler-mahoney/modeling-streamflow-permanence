@@ -272,7 +272,7 @@ qin.files <- list.files(qin.files.dir,pattern="fluxqin")        # Read in all th
 
 headwater.postprocess <- c()                                    # Initialize the postprocessing vector 
 
-# Run the post processing code (Headwater.evaluation) for the behavioral parameter sets
+# Run the post processing code (Headwater.evaluation) for the behavioral parameter sets - note the code will look at the KGE value and only run the instream routing and headwater evaluation functions of the realization is behavioral
 for (qin.file in 1:length(qin.files)) {                         # Iterate over every behavioral parmeter set
   print(qin.file)                                               # Pring the qin.file number 
   print(Sys.time())
@@ -284,20 +284,135 @@ for (qin.file in 1:length(qin.files)) {                         # Iterate over e
                          time.sim=time.sim)                    # Also the percent that the logger data is 'wet'
 }
 
+kge.test <- matrix(ncol=1,nrow=length(qin.files))
+for (qin.file in 1:length(qin.files)) {
+  fluxes.stores.dir <- paste0(model.drty,'/fluxes_stores/')
+  kge.test.in <- read.csv(paste0(fluxes.stores.dir,'gof_log_kge',qin.file,'.csv'))[,2]
+  kge.test[qin.file,1] <- kge.test.in
+}
 
+best.run <-                          # Run the Headwater.evaluation function for each behavioral parameter set
+    Headwater.evaluation.dynamic(model.drty,234,read.spatial,                   # Inputs: qin.file and FR.Spatial configuration
+                         TS.logger.clean.all=TS.logger.clean.all,TS.zoo.all=TS.zoo.all, 
+                         reach.identifiers=reach.identifiers,
+                         model.timestep=model.timestep,
+                         time.sim=time.sim)                    # Also the percent that the logger data is 'wet'
+
+write.csv(best.run$flow.network.thresh,'LM_best_run.csv')
+
+View(headwater.postprocess)
+#kge.behavioral <- ifelse(kge.in>=0.3,1,0) 
+
+#headwater.postprocess.behavioral <- headwater.postprocess[which(kge.behavioral==1)]
+
+# Note the output will include an entry for every realization, but only those with behavioral KGE scores will have data. Remove those old simulations 
+
+headwater.postprocess.behavioral <- headwater.postprocess[!is.na(headwater.postprocess)]
+
+saveRDS(headwater.postprocess.behavioral,'D:/Data/Dynamic-TOPMODEL/Little-Millseat/Calibration-2/headwater_postprocess_behavioral_LM.RData')
 
 ```
 
+# Step 9: Begin plotting
+```{r}
+read.out.calib <- readRDS('D:/Data/Dynamic-TOPMODEL/Little-Millseat/Calibration-2/dynatop_calib_LM.RData')
+
+optim.params <- read.out.calib$par                                                            # Read the optimal parameter set
+names(optim.params) <- names(params)                                               # Set names 
+result.optim <- runPSOCalibrationTopmodel(param.values=optim.params,               # Run the model with the optimal parameter set
+                                          inner.timesteps = in.timestep,           # input the inner.timesteps
+                                          rains = rain.calib, PETs=PET.calib,      # All forcing components are the same
+                                          obss=Q.obs.calib, discs=disc,            # Spatial information comes from dynatop spatial function
+                                          RoutingTables=NULL,                      # See above
+                                          dates.dfs = dates.df)                    # Calibration end date input
+sim.zoo <- (window(result.optim$run$qsim, start = dates.df$calibration.initial,         # window the simulation
+                         end = dates.df$calibration.final))                        # Will convert to zoo obj later
+obs.zoo <- (window(result.optim$run$qobs, start = dates.df$calibration.initial,              # Window the observed
+                  end = dates.df$calibration.final))                               # Will convert to zoo obj later
+
+
+
+plot(sim.zoo)
+lines(obs.zoo,col='red')
+
+
+PSO.drty <- "/PSO.out/"                             # Specify the directory where all of the PSO files are written to
+res <- read_results( MinMax="max",            # Read the results of the calibration; MAX is noting that we are looking for maximum KGE vals
+                    beh.thr=0.3,modelout.cols=NULL)             # 0.3 is the threshold for specifying behavioral model realizations
+params <- res[["params"]]                                       # Record the optimal parameters from the results
+gofs <- res[["gofs"]]                                           # Read the goodness of fit values
+Qsims <- res[["model.values"]]                                  # Model values for the simulations
+model.best <- res[["model.best"]]                               # Read the best model results
+model.obs <- res[["model.obs"]]                                 # Outputthe observed results 
+optim.params <- data.frame(t(res$best.param))                   # Transpose the data and write as dataframe to be read in by the model                                                                   # print stats
+
+## Process Quantiles of the model results 
+params.025.50.975 <- wquantile(params, weights=gofs,            # Determine the weighted quantiles based on the gofs
+                               byrow=FALSE,                     # Specifying wquanitle inputs
+                               probs=c(0.025, 0.5, 0.975),      # probabilities to be calculated
+                               normwt=TRUE, verbose=FALSE)      # Other inputs
+params.025.50.best.975 <- cbind(params.025.50.975[, c(1,2)],    # Cbind to determine how far past the median
+                                Best=as.numeric(optim.params[[1]]),                # This is realated to the beset parameters
+                                params.025.50.975[, 3] )        # Which column is needed 
+colnames(params.025.50.best.975)[4] <- "97.5%"                  # Column names
+round( params.025.50.best.975, 2)                               # Rounding the parameters - for viewing
+n <- ncol(Qsims)                                                # number of time steps
+Qsim.025.q50.q975 <- wquantile(Qsims, weights=gofs, byrow=FALSE,# This is based on the Qsims this time 
+                               probs=c(0.025, 0.5, 0.975),      # This is the quantiles that will be calculated
+                               normwt=TRUE, verbose=FALSE)      # It's normalized
+#round( head(Qsim.025.q50.q975), 3)                              # Prints the quantiles Qsim
+
+dates.cal <- time(sim.zoo)
+q025 <- zoo(Qsim.025.q50.q975[,1], dates.cal)                   # Transform the 2.5 quantiles to zoo
+q975 <- zoo(Qsim.025.q50.q975[,3], dates.cal)                   # Transform the 97.5 quantile to zoo
+
+pf <- pfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the P factor
+pf                                                              # Print the P factor
+rf <- rfactor(x=obs.zoo, lband=q025, uband=q975, na.rm=TRUE)# Calculate the R factor
+rf                                                              # Print the R factor 
+
+# Convert from m/hr (the output of dynatopmmodel) to mm/day: 1 m / 1 hr * 1000 mm / 1 m * 24 hr / 1 day
+sim.plot <- sim.zoo*24000
+colnames(sim.plot) <- 'sim'
+obs.plot <- obs.zoo*24000
+colnames(obs.plot) <- 'obs'
+lower.plot <- q025*24000
+upper.plot <- q975*24000
+
+test.date <- as.POSIXct(dates.cal,format='%Y-%m-%d %H:%M%S')
+
+obs.minus.sim.plot <- obs.plot-sim.plot
+colnames(obs.minus.sim.plot) <- 'obs.minus.sim.plot'
+outlet.sim.obs <- data.frame(time=test.date,'sim'=sim.plot,'obs'=obs.plot,
+                             'lower'=lower.plot,'upper'=upper.plot,'obs.minus.sim'=obs.minus.sim.plot) # This code converts everything from m/hr to mm/day
+
+sim.obs.outlet.plot <- ggplot(data=(outlet.sim.obs),aes(x=time,y=sim)) +theme(legend.position = "none") +geom_ribbon(data=outlet.sim.obs,aes(ymin=lower,ymax=upper),fill='grey70') +
+  theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0) + geom_line(data=outlet.sim.obs,aes(x=time,y=sim),color='black',size=.55)+geom_line(data=outlet.sim.obs,aes(y=obs),color='red',linetype='solid') #+ scale_x_date(date_breaks = '6 months') 
+sim.obs.outlet.plot <-  sim.obs.outlet.plot + theme(axis.title.x=element_blank())
+x11()
+sim.obs.outlet.plot
+
+sim.obs.window <- outlet.sim.obs[which(outlet.sim.obs$time==ymd_hms("2004-09-01 00:00:00")):which(outlet.sim.obs$time==ymd_hms("2004-11-01 00:00:00")),]   
+
+sim.obs.outlet.plot.2 <- ggplot(data=sim.obs.window,aes(x=time,y=sim))+geom_ribbon(data=sim.obs.window,aes(ymin=lower,ymax=upper),fill='grey70')+geom_line(data=sim.obs.window,aes(x=time,y=obs),color='red',linetype='solid') +theme(legend.position = "none")
+sim.obs.outlet.plot.2 <- sim.obs.outlet.plot.2+geom_line(color='black',size=.55)+ theme_bw() + xlab('Date') +ylab('Discharge (mm/d)*')+ylim(0,20.0)
+sim.obs.outlet.plot.2 <-  sim.obs.outlet.plot.2 + theme(axis.title.x=element_blank())
+sim.obs.outlet.plot.2
+
+plot(sim.obs.window$sim)
+```
+
+# Step 10: Post processing and continue plotting 
 ```{r}
 
 
-qin.files <- matrix(nrow=100,ncol=1)
+qin.files <- matrix(nrow=length(headwater.postprocess.behavioral),ncol=1)
 
 # Ouput a vector of the optimal flow theshold for each run 
-optimal.flow.thresh <- data.frame(matrix(nrow=100,ncol=1)) # data.frame(matrix(nrow=length(qin.files),ncol=1))
+optimal.flow.thresh <- data.frame(matrix(nrow=length(qin.files),ncol=1)) # data.frame(matrix(nrow=length(qin.files),ncol=1))
 
 for (iter.postprocess in 1:length(qin.files)) {
-  optimal.flow.thresh[iter.postprocess,1] <- headwater.postprocess[[iter.postprocess]]$thresh.best       # This is the optimal transmissivity that was calibrated. m^3/hr
+  optimal.flow.thresh[iter.postprocess,1] <- headwater.postprocess.behavioral[[iter.postprocess]]$thresh.best       # This is the optimal transmissivity that was calibrated. m^3/hr
 }
 optimal.flow.thresh.mm.day <- optimal.flow.thresh
 colnames(optimal.flow.thresh.mm.day) <- 'flow.thresh'
@@ -307,7 +422,7 @@ percent.correct.state.FC <- data.frame(matrix(nrow=length(qin.files),ncol=length
 
 for (iter.postprocess in 1:length(qin.files)) { 
   for (Reach.id in 1:length(reach.identifiers)) {
-    percent.correct.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$percent.correct[which(headwater.postprocess[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
+    percent.correct.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$percent.correct[which(headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
      }
   }
 
@@ -318,7 +433,7 @@ total.error.state.FC <- data.frame(matrix(nrow=length(qin.files),ncol=length(rea
 
 for (iter.postprocess in 1:length(qin.files)) { 
   for (Reach.id in 1:length(reach.identifiers)) {
-    total.error.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$sum.incorrect[which(headwater.postprocess[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
+    total.error.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$sum.incorrect[which(headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
   }
 }
 
@@ -327,13 +442,13 @@ total.correct.state.FC <- data.frame(matrix(nrow=length(qin.files),ncol=length(r
 
 for (iter.postprocess in 1:length(qin.files)) {
   for (Reach.id in 1:length(reach.identifiers)) {
-    total.correct.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$sum.correct[which(headwater.postprocess[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
+    total.correct.state.FC[iter.postprocess,Reach.id] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$sum.correct[which(headwater.postprocess.behavioral[[iter.postprocess]]$flow.thresh.best.results$out.thresh.data[[Reach.id]]$transmissivity==optimal.flow.thresh[iter.postprocess,1])]
   }
 }
 
 Q.sub.c.reaches.all <- (matrix(ncol=length(qin.files),nrow=length(read.spatial$explicit.ChanTable[,1])))
 for (iter.postprocess in 1:length(qin.files)) {
-  Q.sub.c.reaches.all[,iter.postprocess] <- headwater.postprocess[[iter.postprocess]]$Q.sub.c.best
+  Q.sub.c.reaches.all[,iter.postprocess] <- headwater.postprocess.behavioral[[iter.postprocess]]$Q.sub.c.best
 }
 Q.sub.c.mean <- rowMeans(Q.sub.c.reaches.all)
 Q.sub.c.stdev <- rowSds(Q.sub.c.reaches.all)
@@ -346,7 +461,7 @@ total.percent.correct.FC$percent.correct <- total.percent.correct.FC$sum.correct
 network.percent.on <- (matrix(nrow=length(read.spatial$explicit.ChanTable$link_no),ncol=length(qin.files)))
 
 for (iter.postprocess in 1:length(qin.files)) {
-  network.percent.on[,iter.postprocess] <- headwater.postprocess[[iter.postprocess]]$percent.on.network[,1]
+  network.percent.on[,iter.postprocess] <- headwater.postprocess.behavioral[[iter.postprocess]]$percent.on.network[,1]
 }
 
 network.percent.on.df <- data.frame(network.percent.on)
@@ -361,7 +476,7 @@ network.percent.on.stats$var <- rowVars(network.percent.on)
 simulated.network.flow <- list()
 
 for (iter.postprocess in 1:length(qin.files)) {
-  simulated.network.flow[[iter.postprocess]] <- headwater.postprocess[[iter.postprocess]]$flow.network.thresh # tHIS IS IN M^3/HR
+  simulated.network.flow[[iter.postprocess]] <- headwater.postprocess.behavioral[[iter.postprocess]]$flow.network.thresh # tHIS IS IN M^3/HR
 }
 
 # determine the total network length for each time step by: multiplying the on/off state of the reach by the reach length, then doing a row sum.
@@ -369,10 +484,15 @@ for (iter.postprocess in 1:length(qin.files)) {
 reach.length.m <- read.spatial$explicit.ChanTable$stream_length_ft*0.3048
 network.length.postprocess <- matrix(nrow=nrow(result.optim$run$fluxes$qbf),ncol=length(qin.files))
 for (iter.postprocess in 1:length(qin.files)) { 
-  network.length.postprocess[,iter.postprocess] <- rowSums(sweep(headwater.postprocess[[iter.postprocess]]$total.network.on.off,MARGIN=2,reach.length.m,`*`))
+  network.length.postprocess[,iter.postprocess] <- rowSums(sweep(headwater.postprocess.behavioral[[iter.postprocess]]$total.network.on.off,MARGIN=2,reach.length.m,`*`))
 }
-network.length.total.fig <- (headwater.postprocess[[qin.file]]$total.network.on.off[1:nrow(network.length.postprocess),])
-row.names(network.length.total.fig) <- q_specific.run$time
+
+row.names(network.length.postprocess) <- time(Q.obs.calib)
+
+network.length.total.fig <- (headwater.postprocess.behavioral[[36]]$total.network.on.off[1:nrow(network.length.postprocess),])
+
+
+row.names(network.length.total.fig) <- time(Q.obs.calib)
 #rownames(network.length.total) <- seq(1,12504)
 
 # Convert from m/hr (the output of dynatopmmodel) to mm/day: 1 m / 1 hr * 1000 mm / 1 m * 24 hr / 1 day
@@ -391,8 +511,8 @@ sd.network.length <- rowSds(network.length.postprocess)
 sd.network.length.min <- mean.network.length-sd.network.length
 sd.network.length.max <- mean.network.length+sd.network.length
 plot.network.length <- data.frame(length=mean.network.length,time=time.sim,sd.min=sd.network.length.min,sd.max=sd.network.length.max)
-network.length.start <- which(plot.network.length$time==time.sim)
-plot.network.length <- plot.network.length[network.length.start:length(plot.network.length$length),]
+#network.length.start <- which(plot.network.length$time==time.sim)
+#plot.network.length <- plot.network.length[network.length.start:length(plot.network.length$length),]
 
 length.plot <- ggplot(data=plot.network.length,aes(x=time,y=length))+xlab('Date')+ylab('Mean network length (m)')
 #length.plot <- length.plot + geom_ma(ma_fun=SMA,n=36, linetype='solid') 
@@ -426,8 +546,10 @@ x11()
 grid.arrange(gsim.obs.outlet.plot,gpercent.length.plot,ncol=1)
 
 start.ts <- which(plot.network.length$time==time(sim.plot[1]))
-which(plot.network.length$time==time(sim.plot[1]))
-q.vs.length <- data.frame(Q.sim=sim.plot,length = plot.network.length$length[start.ts:(start.ts+length(sim.plot)-1)],time=plot.network.length$time[start.ts:(start.ts+length(sim.plot)-1)])
+
+length.reduced <- plot.network.length[start.ts:(start.ts+length(sim.plot)-1),]
+
+q.vs.length <- data.frame(Q.sim=sim.plot,length = length.reduced$length,time=length.reduced$time)
 View(q.vs.length)
 q.vs.length.plot <- ggplot(data=q.vs.length,aes(x=sim,y=length/1000))+geom_point()+scale_x_log10()+scale_y_log10()+ylab('Flowing Stream Length (km)')+
   xlab('Discharge (mm/day)')+theme_bw()+theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank())
@@ -494,7 +616,7 @@ percent.correct.state.FC$kge <- kge.in[,1]
 
 test.out <- percent.correct.state.FC[which(percent.correct.state.FC$kge>0.3),]
 
-test.on <- data.frame('on-off'=headwater.postprocess[[61]]$total.network.on.off$R520)
+test.on <- data.frame('on-off'=headwater.postprocess.behavioral[[61]]$total.network.on.off$R520)
 
 test.on$Date <- time(Q.obs.calib)
 
@@ -536,9 +658,13 @@ grid.arrange(plot.fc1,plot.fc2,plot.fc4)
 plot.legend <- ggplot(data=kge.FC1percentcorrect.flowthresh,aes(x=kge,y=FC1.percent.correct,color=flow.thresh))+ geom_point() + xlab('KGE') + ylab('Total Percent Correct (%)') +scale_colour_viridis_c() + labs(color=bquote('Transmissivity ('~m^3~'/hr)')) + ggtitle('FC1') + ylim(95,100)
 plot.legend
 
-test
 
+on.vs.area <- data.frame(reach = read.spatial$explicit.ChanTable$link_no,upstream.area = read.spatial$explicit.ChanTable$US_area_m2,percent.on.avg = network.percent.on.stats$mean,
+           min.percent.on = (network.percent.on.stats$mean-network.percent.on.stats$stdev), max.percent.on = (network.percent.on.stats$mean+network.percent.on.stats$stdev),
+           best.percent.on=network.percent.on.df$X36)
 
+plot.on.vs.area <- ggplot(on.vs.area,aes(x=upstream.area/1000000,y=percent.on.avg*100)) + geom_point() + geom_errorbar(aes(ymin=min.percent.on*100,ymax=max.percent.on*100)) + scale_x_continuous(trans='log10') +
+  geom_point(aes(x=upstream.area/1000000,y=best.percent.on*100),colour='red') + xlab('Area (km2)') + ylab('Percent Surface Flow Present (%)') + theme_bw()
 
 ```
 
